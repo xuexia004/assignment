@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import time
+from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -91,6 +92,67 @@ class UIError(Exception):
         self.message, self.status = message, status
 
 
+def _journal_records(path: Path):
+    """Ignore a torn final record; never expose its unvalidated contents."""
+    with path.open("rb") as stream:
+        for line in stream:
+            if not line.endswith(b"\n"):
+                break
+            try:
+                record = json.loads(line)
+                event = record["event"]
+                if isinstance(event, dict) and type(event.get("seq")) is int and event["seq"] > 0:
+                    yield record
+            except (ValueError, KeyError, TypeError, UnicodeError):
+                continue
+
+
+def _trace_records(path: Path, cursor: dict | None, legacy_lines: int = 0):
+    """Read only appended complete lines; validate the cursor across replacements."""
+    records = []
+    with path.open("rb") as stream:
+        size = stream.seek(0, 2)
+        stream.seek(0)
+        prefix = stream.read(64)
+        offset = count = 0
+        if cursor and type(cursor.get("offset")) is int and 0 <= cursor["offset"] <= size:
+            candidate = cursor["offset"]
+            stream.seek(max(0, candidate - 64))
+            anchor = stream.read(min(64, candidate))
+            if (hashlib.sha256(anchor).hexdigest() == cursor.get("anchor")
+                    and hashlib.sha256(prefix[:min(64, candidate)]).hexdigest() == cursor.get("prefix")):
+                offset, count = candidate, cursor.get("lines", 0)
+        elif not cursor and legacy_lines:
+            # One-time migration from the old line cursor; do not replay history.
+            stream.seek(0)
+            for _ in range(legacy_lines):
+                if not stream.readline().endswith(b"\n"):
+                    break
+                offset = stream.tell()
+                count += 1
+            if count != legacy_lines:
+                offset = count = 0
+        stream.seek(max(0, offset - 64))
+        anchor = stream.read(min(64, offset))
+        stream.seek(offset)
+        while True:
+            line = stream.readline()
+            if not line or not line.endswith(b"\n"):
+                break
+            count += 1
+            anchor = (anchor + line)[-64:]
+            end = stream.tell()
+            position = {"offset": end, "lines": count,
+                        "anchor": hashlib.sha256(anchor).hexdigest(),
+                        "prefix": hashlib.sha256(prefix[:min(64, end)]).hexdigest()}
+            try:
+                item = json.loads(line)
+            except (ValueError, UnicodeError):
+                item = None
+            records.append((item if isinstance(item, dict) else None, position))
+    return records
+
+
 class Workbench:
     def __init__(self, settings: Settings, *, root: Path | None = None,
                  config_path: Path | None = None, research_runner=None,
@@ -125,6 +187,7 @@ class Workbench:
                 if not SAFE_ID.fullmatch(job["job_id"]) or job["session_id"] not in self.sessions:
                     continue
                 self.jobs[job["job_id"]] = job
+                self._restore_events(job)
                 self._restore_loaded_artifacts(job)
                 if job["status"] in ACTIVE:
                     # Restart never retries billable work without a new user action.
@@ -252,13 +315,75 @@ class Workbench:
             self.persist_session(session)
         self._sync_conversation(job)
 
-    def event(self, job: dict, kind: str, *, message: str = "", stage: str = "", data=None) -> None:
-        seq = job.get("_event_seq", 0) + 1
-        job["_event_seq"] = seq
+    def _event_path(self, job: dict) -> Path:
+        # Keep internal/test/legacy identifiers out of file paths, too.
+        name = hashlib.sha256(job["job_id"].encode()).hexdigest()
+        return self.root / "events" / (name + ".jsonl")
+
+    def _restore_events(self, job: dict) -> None:
+        path = self._event_path(job)
+        if not path.is_file():
+            return
+        tail = deque(maxlen=800)
+        latest = None
+        with suppress(OSError):
+            for record in _journal_records(path):
+                tail.append(record["event"])
+                latest = record
+        if latest is None:
+            return
+        snapshot_seq = max(job.get("_event_seq", 0),
+                           max((event["seq"] for event in job.get("events", [])), default=0))
+        combined = {event["seq"]: event for event in [*tail, *job.get("events", [])]}
+        job["events"] = [combined[seq] for seq in sorted(combined)[-800:]]
+        job["_event_seq"] = max(snapshot_seq, latest["event"]["seq"])
+        if latest["event"]["seq"] >= snapshot_seq:
+            if latest.get("trace_cursor"):
+                job["_trace_cursor"] = latest["trace_cursor"]
+            if latest.get("trace_lines") is not None:
+                job["_trace_lines"] = latest["trace_lines"]
+
+    def events_after(self, job: dict, after: int) -> list[dict]:
+        recent = list(job.get("events", []))
+        if recent and after >= recent[0]["seq"] - 1:
+            return [event for event in recent if event["seq"] > after]
+        # Only lagging/reconnecting clients scan the archive; live delivery stays
+        # in the bounded tail. Index archives if measured reconnect cost warrants it.
+        events = {}
+        path = self._event_path(job)
+        if path.is_file():
+            for record in _journal_records(path):
+                event = record["event"]
+                if event["seq"] > after:
+                    events[event["seq"]] = event
+        events.update({event["seq"]: event for event in recent if event["seq"] > after})
+        return [events[seq] for seq in sorted(events)]
+
+    def event(self, job: dict, kind: str, *, message: str = "", stage: str = "", data=None,
+              persist: bool = True) -> None:
+        seq = max(job.get("_event_seq", 0),
+                  max((item["seq"] for item in job.get("events", [])), default=0)) + 1
         event = {"seq": seq, "timestamp": now(), "kind": kind, "message": message,
                  "stage": stage, "data": data or {}}
+        path = self._event_path(job)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        seed = job.get("events", []) if not path.exists() else []
+        with path.open("a+b") as stream:
+            size = stream.seek(0, 2)
+            if size:
+                stream.seek(-1, 2)
+                if stream.read(1) != b"\n":
+                    stream.write(b"\n")
+            for item in [*seed, event]:
+                record = {"event": self._redact_public(item)}
+                if item is event:
+                    record.update(trace_cursor=job.get("_trace_cursor"),
+                                  trace_lines=job.get("_trace_lines", 0))
+                stream.write((json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8"))
+        job["_event_seq"] = seq
         job["events"] = [*job.get("events", []), event][-800:]
-        self.persist_job(job)
+        if persist:
+            self.persist_job(job)
 
     def public_job(self, job: dict) -> dict:
         value = {key: value for key, value in job.items() if not key.startswith("_")}
@@ -844,21 +969,28 @@ class Workbench:
         if not trace.is_file():
             return
         try:
-            lines = (await asyncio.to_thread(trace.read_text, encoding="utf-8")).splitlines()
+            records = await asyncio.to_thread(_trace_records, trace, job.get("_trace_cursor"),
+                                             job.get("_trace_lines", 0))
         except OSError:
             return
-        count = job.get("_trace_lines", 0)
-        for line in lines[count:]:
-            try:
-                item = json.loads(line)
-            except ValueError:
-                break
-            message = item.get("message") if isinstance(item.get("message"), str) else ""
-            # Persist the cursor in the same job snapshot as the event. A restart
-            # therefore cannot replay an already committed trace line.
-            count += 1
-            job["_trace_lines"] = count
-            self.event(job, "trace", stage=item.get("stage", ""), message=message, data=item)
+        changed = False
+        try:
+            for item, cursor in records:
+                message = (item.get("message") if isinstance(item, dict)
+                           and isinstance(item.get("message"), str) else "")
+                previous = job.get("_trace_cursor"), job.get("_trace_lines", 0)
+                job["_trace_cursor"], job["_trace_lines"] = cursor, cursor["lines"]
+                try:
+                    self.event(job, "trace", stage=str(item.get("stage", "")) if item else "trace",
+                               message=message if item else "执行日志中有一条损坏记录，已跳过并继续读取。",
+                               data=item or {"log_record_invalid": True}, persist=False)
+                except OSError:
+                    job["_trace_cursor"], job["_trace_lines"] = previous
+                    raise
+                changed = True
+        finally:
+            if changed:
+                self.persist_job(job)
 
     async def _watch(self, job: dict, settings: Settings) -> None:
         while True:
@@ -1075,12 +1207,20 @@ async def events_endpoint(request: Request) -> Response:
         last, heartbeat = after, time.monotonic()
         yield ": connected\n\n"
         while True:
-            for event in list(job["events"]):
+            events = await asyncio.to_thread(manager.events_after, job, last)
+            for event in events:
                 if event["seq"] > last:
+                    if event["seq"] > last + 1:
+                        notice = {"seq": event["seq"] - 1, "timestamp": now(), "kind": "progress",
+                                  "stage": "", "message": "较早的执行记录未被保存或已不可用，以下从现存记录继续。",
+                                  "data": {"history_gap": True, "first_available_seq": event["seq"]}}
+                        yield f"id: {notice['seq']}\nevent: update\ndata: {json.dumps(notice, ensure_ascii=False)}\n\n"
                     public_event = manager._redact_public(event)
                     yield f"id: {event['seq']}\nevent: update\ndata: {json.dumps(public_event, ensure_ascii=False)}\n\n"
                     last = event["seq"]
             if job["status"] not in ACTIVE:
+                if job.get("events") and last < job["events"][-1]["seq"]:
+                    continue  # A terminal event may have arrived during replay.
                 value = json.dumps(manager._redact_public(
                     {"job_id": job["job_id"], "status": job["status"],
                      "delivery_status": job.get("delivery_status")}), ensure_ascii=False)

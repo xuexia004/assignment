@@ -303,6 +303,73 @@ def test_sse_replays_after_sequence_then_emits_terminal_done(tmp_path):
             '"delivery_status": "preliminary_notes"}') in response.text
 
 
+def test_sse_replays_more_than_800_events_after_restart_with_redaction(tmp_path):
+    app, manager, _ = _app_at(tmp_path)
+    session = manager.create_session()
+    job = {"job_id": JOB_ID, "session_id": session["session_id"], "idea": "fixture archive",
+           "status": "completed", "created_at": "", "updated_at": "", "result": None,
+           "artifacts": [], "events": [], "error": None}
+    manager.jobs[JOB_ID] = job
+    key = manager.settings().llm_api_key
+    for number in range(1005):
+        manager.event(job, "progress", message=f"fixture {number} {key}", persist=False)
+    manager.persist_job(job)
+    assert len(job["events"]) == 800
+    assert key not in manager._event_path(job).read_text(encoding="utf-8")
+    reopened = Workbench(_settings(tmp_path), root=manager.root, config_path=manager.config_path)
+    app.state.workbench = reopened
+    response = asyncio.run(_request(app, "GET", f"/api/jobs/{JOB_ID}/events?after=3"))
+    events = [json.loads(line[6:]) for line in response.text.splitlines()
+              if line.startswith("data: ") and '"seq"' in line]
+    assert [event["seq"] for event in events] == list(range(4, 1006))
+    assert not any(event["data"].get("history_gap") for event in events)
+    assert key not in response.text and "[已隐藏]" in response.text
+    assert "event: done" in response.text
+    # An interrupted final append must not swallow the next event on restart.
+    path = reopened._event_path(reopened.jobs[JOB_ID])
+    with path.open("ab") as stream:
+        stream.write(b'{"event":')
+    reopened.event(reopened.jobs[JOB_ID], "progress", message="after torn append")
+    assert reopened.events_after(reopened.jobs[JOB_ID], 1005)[0]["seq"] == 1006
+
+
+def test_sse_reports_an_unrecoverable_legacy_history_gap(tmp_path):
+    app, manager, _ = _app_at(tmp_path)
+    manager.jobs[JOB_ID] = {"job_id": JOB_ID, "status": "completed", "events": [
+        {"seq": 205, "timestamp": "fixture", "kind": "progress", "message": "retained",
+         "stage": "", "data": {}},
+    ]}
+    response = asyncio.run(_request(app, "GET", f"/api/jobs/{JOB_ID}/events?after=1"))
+    events = [json.loads(line[6:]) for line in response.text.splitlines()
+              if line.startswith("data: ") and '"seq"' in line]
+    assert [event["seq"] for event in events] == [204, 205]
+    assert events[0]["data"]["history_gap"] is True
+    assert "未被保存" in events[0]["message"]
+    assert events[1]["message"] == "retained"
+
+
+def test_sse_drains_a_terminal_event_created_during_replay(tmp_path, monkeypatch):
+    app, manager, _ = _app_at(tmp_path)
+    job = {"job_id": JOB_ID, "status": "running", "events": [
+        {"seq": 1, "timestamp": "fixture", "kind": "progress", "message": "running",
+         "stage": "", "data": {}},
+    ]}
+    manager.jobs[JOB_ID] = job
+    original = manager.events_after
+
+    def replay(value, after):
+        result = original(value, after)
+        if value["status"] == "running":
+            value["status"] = "completed"
+            value["events"].append({"seq": 2, "timestamp": "fixture", "kind": "status",
+                                    "message": "completed", "stage": "", "data": {}})
+        return result
+
+    monkeypatch.setattr(manager, "events_after", replay)
+    response = asyncio.run(_request(app, "GET", f"/api/jobs/{JOB_ID}/events"))
+    assert response.text.index("id: 2") < response.text.index("event: done")
+
+
 def test_service_shutdown_refuses_active_jobs(tmp_path):
     root = (tmp_path / "data-root").resolve()
     shutdowns = []
