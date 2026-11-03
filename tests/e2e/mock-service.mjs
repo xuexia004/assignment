@@ -59,10 +59,14 @@ await Promise.all([
 
 const pdfArtifact = { artifact_id: 'pdf_fixture', name: 'registered-paper.pdf', kind: 'pdf', paper_id: 'paper_1' };
 const reportArtifact = { artifact_id: 'report_fixture', name: 'registered-report.md', kind: 'report' };
+const markdownArtifact = { artifact_id: 'markdown_fixture', name: 'registered-paper.md', kind: 'markdown', paper_id: 'paper_1' };
+const markdownPath = path.join(artifactRoot, markdownArtifact.name);
+await writeFile(markdownPath, '# Fixture source Markdown\n\nOriginal extracted paper text.\n');
 const misleadingArtifact = { artifact_id: 'misleading_pdf', name: 'not-a-pdf.pdf', kind: 'pdf', paper_id: 'paper_1' };
 const registeredPaths = new Map([
   [pdfArtifact.artifact_id, pdfPath],
   [reportArtifact.artifact_id, reportPath],
+  [markdownArtifact.artifact_id, markdownPath],
   [misleadingArtifact.artifact_id, misleadingPath],
 ]);
 const evidence = { paper_id: 'paper_1', pdf_artifact_id: pdfArtifact.artifact_id, page_number: 2,
@@ -71,13 +75,14 @@ const paper = { paper_id: 'paper_1', title: 'Deterministic fixture paper', autho
   year: 2026, abstract: 'Synthetic fixture only.', doi: null, arxiv_id: null, arxiv_version: null,
   paper_url: null, pdf_url: null, pdf_urls: [], sources: ['mock'], source_records: [],
   citation_count: null, initial_score: 1, final_score: 1, rank: 1,
+  ranking_details: { semantic_rank: 1, cosine_similarity: 0.75 },
   selection_reason: 'Fixture selected deterministically.', ranking_reason: 'No live ranking.',
-  status: 'converted', pdf_artifact_id: pdfArtifact.artifact_id, markdown_artifact_id: null,
+  status: 'converted', pdf_artifact_id: pdfArtifact.artifact_id, markdown_artifact_id: markdownArtifact.artifact_id,
   acquisition_status: 'downloaded', conversion_status: 'converted', reading_status: 'fulltext',
   page_map: [{ page_number: 1, start_char: 0, end_char: 10 }, { page_number: 2, start_char: 10, end_char: 20 }],
   fulltext_quality: { complete: true, synthetic: true }, metadata: { synthetic: true }, errors: [] };
 const unavailablePaper = { ...paper, paper_id: 'paper_unavailable', title: 'Unavailable fixture paper',
-  status: 'download_failed', pdf_artifact_id: null, acquisition_status: 'unavailable',
+  status: 'download_failed', pdf_artifact_id: null, markdown_artifact_id: null, acquisition_status: 'unavailable',
   conversion_status: 'failed', reading_status: 'metadata_only', page_map: [],
   fulltext_quality: { complete: false, synthetic: true },
   error: 'Fixture full text unavailable.' };
@@ -102,7 +107,8 @@ const result = (scenario, deliveryStatus, researchBrief, errors = []) => ({
   selected_papers: deliveryStatus === 'no_result' ? [] : [paper],
   summaries: deliveryStatus === 'no_result' ? [] : [summary],
   report: deliveryStatus === 'no_result' ? null : { markdown: '# Fixture report', report_artifact_id: reportArtifact.artifact_id },
-  source_counts: { mock: 1 }, metrics: { synthetic: true, fake_llm: true }, errors, timings: [], tool_calls: [],
+  source_counts: { mock: 1 }, metrics: { synthetic: true, fake_llm: true }, errors,
+  timings: [{ stage: 'search', duration_seconds: 1 }, { stage: 'total', duration_seconds: 5 }], tool_calls: [],
 });
 function events(messages) {
   return messages.map((message, index) => ({ seq: index + 1, timestamp: `2026-10-27T00:00:0${index}Z`,
@@ -146,7 +152,7 @@ jobs.set('reconnect', makeJob('reconnect', 'result', brief(1),
   ['First event before disconnect', 'Second event after reconnect']));
 for (const scenario of ['success', 'partial', 'no_result', 'retry_recovered', 'retry_exhausted', 'reconnect']) {
   const job = jobs.get(scenario);
-  job.artifacts = scenario === 'no_result' ? [] : [pdfArtifact, reportArtifact, misleadingArtifact];
+  job.artifacts = scenario === 'no_result' ? [] : [pdfArtifact, markdownArtifact, reportArtifact, misleadingArtifact];
 }
 const visibleScenarios = ['success', 'partial', 'no_result', 'retry_recovered', 'retry_exhausted'];
 const submissions = [];
@@ -210,7 +216,7 @@ const server = http.createServer(async (request, response) => {
       return json(response, 200, { submissions, sse_connections: Object.fromEntries(sseConnections) });
     }
     if (url.pathname === '/api/service' && request.method === 'GET') {
-      return json(response, 200, { version: '0.3.0', api_version: 3, pid: process.pid,
+      return json(response, 200, { version: '1.0.0', api_version: 3, pid: process.pid,
         active_jobs: 0, data_root: dataRoot, config_path: path.join(dataRoot, 'config.json') });
     }
     if (url.pathname === '/api/service/shutdown' && request.method === 'POST') {
@@ -270,7 +276,9 @@ const server = http.createServer(async (request, response) => {
         return json(response, 200, { path: resolved.path, name: resolved.item.name, kind: resolved.item.kind });
       }
       if (resolved.item.kind === 'pdf') return json(response, 415, { error: 'PDF is not text.' });
-      return json(response, 200, { text: '# Fixture report\n\nSynthetic Mock HTTP/Fake LLM content only.\n',
+      return json(response, 200, { text: resolved.item.kind === 'markdown'
+        ? '# Fixture source Markdown\n\nOriginal extracted paper text.\n'
+        : '# Fixture report\n\nSynthetic Mock HTTP/Fake LLM content only.\n',
         name: resolved.item.name, kind: resolved.item.kind, truncated: false });
     }
     return json(response, 404, { error: 'Unknown fixture route.' });

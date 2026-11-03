@@ -1,7 +1,7 @@
 import { ArrowUpRight, BookOpen, Search } from 'lucide-react';
 import type { Artifact, Paper, Summary } from '../../../types/contracts';
 import { useWorkspaceState } from '../../../stores/workspaceStore';
-import { collectPapers, summaryScopeLabel, summaryStatus, summaryStatusLabel } from '../../../utils/papers';
+import { collectPapers } from '../../../utils/papers';
 import { displayedPapers, paperMaterialNote } from '../../../utils/resultPresentation';
 import { layoutStore } from '../../stores/layoutStore';
 
@@ -13,6 +13,7 @@ export function PaperList() {
   const jobId = resultOwner?.job_id;
   const summaries = new Map(collection.summaries.map(summary => [summary.paper_id, summary] as const));
   const displayed = displayedPapers(collection);
+  const finalPapers = displayed.papers;
   const artifacts = resultOwner?.artifacts ?? [];
 
   if (loadingConversation) {
@@ -28,12 +29,12 @@ export function PaperList() {
     <div className="paper-list-view">
       <div className="panel-intro">
         <div><span className="eyebrow">本次研究</span><h2>关键论文</h2></div>
-        {displayed.papers.length > 0 && <span className="paper-count">{displayed.papers.length} 篇</span>}
+        {finalPapers.length > 0 && <span className="paper-count">{finalPapers.length} 篇</span>}
       </div>
-      <p className="panel-subtitle">{displayed.description} 点击论文进入研究笔记；已关联 PDF 文件时可尝试原文阅读。</p>
-      {displayed.papers.length > 0 && <section className="paper-section" aria-labelledby="effective-papers-title">
+      <p className="panel-subtitle">{displayed.description} 查看研究笔记、原文 Markdown 和 PDF 原文。</p>
+      {finalPapers.length > 0 && <section className="paper-section" aria-labelledby="effective-papers-title">
         <h3 id="effective-papers-title" className="sr-only">{displayed.stage === 'analysis' ? '实际分析论文' : '精选候选论文'}</h3>
-        {displayed.papers.map((paper, index) => <PaperRow
+        {finalPapers.map((paper, index) => <PaperRow
           key={paper.paper_id}
           paper={paper}
           index={index + 1}
@@ -42,7 +43,7 @@ export function PaperList() {
           artifacts={artifacts}
         />)}
       </section>}
-      {displayed.papers.length === 0 && <div className="panel-empty compact-empty"><span><Search size={19}/></span><strong>任务没有返回论文</strong><p>详细原因保留在执行记录中。</p></div>}
+      {finalPapers.length === 0 && <div className="panel-empty compact-empty"><span><Search size={19}/></span><strong>任务没有返回论文</strong><p>详细原因保留在执行记录中。</p></div>}
     </div>
   );
 }
@@ -72,9 +73,10 @@ function PaperRow({ paper, index, jobId, summary, artifacts }: {
 
 function materialNote(paper: Paper, summary: Summary | undefined, artifacts: Artifact[]): string {
   const material = paperMaterialNote(paper, artifacts);
-  const status = summaryStatus(summary);
   if (summary) {
-    const note = `${summaryStatusLabel(status)} · ${summaryScopeLabel(summary.summary_scope)}`;
+    const hasNote = Boolean(summary.deep_analysis?.trim() || summary.overview?.trim() || summary.markdown?.trim());
+    const note = summary.summary_scope === 'demo_fixture' ? '演示样例'
+      : summary.summary_scope === 'abstract_only' ? '摘要研究笔记' : hasNote ? '研究笔记可读' : '研究笔记未生成';
     return `${note} · ${material}`;
   }
   return `${material} · 研究笔记缺失`;

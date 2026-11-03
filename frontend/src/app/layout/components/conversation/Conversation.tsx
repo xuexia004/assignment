@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, BookOpen, CircleAlert, Clock3, FileText, LoaderCircle, PanelRightClose, PanelRightOpen, Search, ShieldCheck, Square, Sparkles } from 'lucide-react';
-import type { Action, ExecutionMode, Message } from '../../../types/contracts';
+import type { Action, Message } from '../../../types/contracts';
 import { isReadOnlyConversation } from '../../../types/contracts';
 import { useWorkspaceState, workspaceStore } from '../../../stores/workspaceStore';
 import { isJobActive, statusLabel } from '../../../utils/status';
@@ -12,6 +12,8 @@ import { deliveryStatusFor, reportArtifactFor } from '../../../utils/researchBri
 import { layoutStore, useLayoutState } from '../../stores/layoutStore';
 import { MarkdownContent } from '../common/MarkdownContent';
 import { ResearchBriefView } from '../common/ResearchBriefView';
+import { PaperCountSelect } from './PaperCountSelect';
+import { paperTitleCitations } from '../../../utils/paperCitations';
 
 const suggestions = [
   '长期记忆如何降低 Agent 的推理成本？',
@@ -46,7 +48,10 @@ export function Conversation() {
   const terminalKey = result && !jobActive && isTerminalResult(result)
     ? `${resultOwner?.job_id ?? 'conversation'}:${result.run_id ?? 'result'}`
     : '';
-  const visibleMessages = terminalKey ? messages.filter(message => message.role !== 'status') : messages;
+  const visibleMessages = terminalKey ? messages.filter(message => message.role !== 'status'
+    && !(result?.brief && resultOwner?.job_id && message.role === 'assistant' && message.kind === 'research'
+      && message.job_id === resultOwner?.job_id)) : messages;
+  const citationPapers = [...(result?.papers ?? []), ...(result?.selected_papers ?? []), ...(result?.report?.references ?? [])];
 
   useLayoutEffect(() => {
     const query = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -139,7 +144,7 @@ export function Conversation() {
       {state.loadingConversation && <div className="timeline-loading" aria-live="polite"><span className="skeleton-line wide"/><span className="skeleton-line"/><span className="skeleton-line medium"/></div>}
       {!state.loadingConversation && messages.length === 0 && !state.activeJob && <Welcome onChoose={value => workspaceStore.setDraft(value)}/>}
       <div className="message-thread">
-        {!state.loadingConversation && visibleMessages.map((message, index) => <MessageRow key={message.id || `${message.role}:${index}`} message={message}/>) }
+        {!state.loadingConversation && visibleMessages.map((message, index) => <MessageRow key={message.id || `${message.role}:${index}`} message={message.role === 'assistant' ? { ...message, content: paperTitleCitations(message.content, citationPapers) } : message}/>) }
         {state.activeJob && jobActive && <div className="job-state-card"><div className={`job-state-icon status-${state.activeJob.status}`}><LoaderCircle size={16} className="spin"/></div><div><strong>{state.activeJob.action === 'chat' ? '讨论任务' : '研究任务'} · {statusLabel(state.activeJob.status)}</strong><p>{state.activeJob.idea}</p></div></div>}
         {state.activeJob && jobActive && <section className="live-progress" aria-label="任务实时进度">
           <div className="live-progress-head"><span className="live-dot is-live"/><strong>实时进度</strong><span>{liveEvents.length ? `最近 ${liveEvents.length} 条` : '等待事件'}</span></div>
@@ -166,12 +171,16 @@ export function Conversation() {
         <textarea ref={composerRef} aria-label={readOnly ? '旧版记录只读' : state.action === 'research' ? '研究问题' : '讨论消息'} aria-describedby="composer-hint composer-count" enterKeyHint="send" maxLength={12000} value={draft} onChange={event => workspaceStore.setDraft(event.target.value)} onKeyDown={keyDown} placeholder={readOnly ? '旧版记录仅供阅读' : jobActive ? '任务进行中；可以先输入下一条，完成后再发送。' : state.action === 'research' ? '描述你想研究的问题…' : '继续讨论当前研究…'} rows={3} disabled={state.loadingConversation || readOnly}/>
         <div className="composer-controls">
           <div className="composer-options">{state.action === 'research' && <>
-            <label>精选论文 <select aria-label="精选论文数量" value={state.topK} disabled={jobActive || state.sending} onChange={event => workspaceStore.setTopK(Number(event.target.value))}>{![3, 5, 8].includes(state.topK) && <option value={state.topK}>其他 {state.topK} 篇</option>}<option value={3}>3 篇</option><option value={5}>5 篇</option><option value={8}>8 篇</option></select></label>
+            <PaperCountSelect value={state.topK} disabled={jobActive || state.sending || readOnly} onChange={value => workspaceStore.setTopK(value)}/>
+            <label className="parallel-option" title="同时检索不同来源并处理多篇论文；并发数可在设置中调整。">
+              <span>并行优化</span>
+              <input type="checkbox" role="switch" aria-label="并行优化" checked={state.executionMode === 'parallel'}
+                disabled={jobActive || state.sending || readOnly}
+                onChange={event => workspaceStore.setExecutionMode(event.target.checked ? 'parallel' : 'sequential')}/>
+            </label>
             <details className="advanced-research-settings">
               <summary>高级设置</summary>
               <div className="advanced-settings-popover">
-                <label>执行方式 <select aria-label="研究执行方式" value={state.executionMode} disabled={jobActive || state.sending} onChange={event => workspaceStore.setExecutionMode(event.target.value as ExecutionMode)}><option value="auto">自动</option><option value="parallel">并行</option><option value="sequential">顺序</option></select></label>
-                <small>自动由服务端按真实配置选择；前端不假定实际执行方式。</small>
                 <label>其他精选数量 <input aria-label="其他精选论文数量" type="number" min={1} max={15} value={state.topK} disabled={jobActive || state.sending} onChange={event => workspaceStore.setTopK(Number(event.target.value))}/></label>
                 <small>推荐使用 3、5 或 8 篇；旧记录中的其他合法数量仍可保留。</small>
               </div>

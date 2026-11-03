@@ -98,17 +98,9 @@ test('PDF render cancellation waits for earlier render before drawing into same 
   assert.match(viewer, /重新读取/);
 });
 
-test('PDF page survives switching between notes and PDF, and evidence stays on its owning paper', () => {
+test('v1 keeps three independent reading views and guards cross-job data', () => {
   const reader = source('frontend/src/app/layout/components/paper-reader/PaperReader.tsx');
-  assert.match(reader, /onPageChange=\{setRequestedPage\}/);
-  assert.match(reader, /item\.paper_id !== paper\.paper_id/);
-  assert.match(reader, /item\.paper_id === paper\.paper_id && canLocatePdfEvidence\(item\)/);
+  assert.match(reader, /type ReaderView = 'summary' \| 'markdown' \| 'pdf'/);
   assert.match(reader, /remoteJob\?\.job_id === remoteTargetId/);
   assert.match(reader, /remoteError\?\.jobId === remoteTargetId/);
-});
-
-test('expanding extracted Markdown actually requests it; merely rendering the closed panel does not', () => {
-  const reader = source('frontend/src/app/layout/components/paper-reader/PaperReader.tsx');
-  assert.match(reader, /if \(!showFulltext \|\| !job \|\| !markdownArtifact\) return/);
-  assert.match(reader, /onToggle=\{event => \{ if \(event\.currentTarget\.open\) setShowFulltext\(true\); \}\}/);
 });

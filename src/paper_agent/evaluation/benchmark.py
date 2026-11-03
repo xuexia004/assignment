@@ -38,6 +38,8 @@ def _configuration(settings: Settings) -> dict[str, Any]:
         "max_chunks": settings.max_chunks,
         "llm_max_output_tokens": settings.llm_max_output_tokens,
         "llm_input_token_budget": settings.llm_input_token_budget,
+        "analysis_input_token_budget": settings.analysis_input_token_budget,
+        "report_input_token_budget": settings.report_input_token_budget,
         "llm_max_calls": settings.llm_max_calls,
         "llm_max_total_tokens": settings.llm_max_total_tokens,
         "llm_max_retries": settings.llm_max_retries,

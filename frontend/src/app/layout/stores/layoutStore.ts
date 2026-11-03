@@ -4,7 +4,10 @@ import type { DockGroup, DockGroupId, LayoutTab, PanelKind } from '../../types/u
 const STORAGE_KEY = 'paperAgent.layout.v1';
 const STORAGE_VERSION = 2;
 
+export type ThemePreference = 'system' | 'light' | 'dark';
+
 export interface LayoutState {
+  theme: ThemePreference;
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   dockOpen: boolean;
@@ -23,6 +26,7 @@ const DEFAULT_GROUPS: DockGroup[] = [{
 
 function initialState(): LayoutState {
   const defaults: LayoutState = {
+    theme: 'system',
     sidebarCollapsed: false,
     sidebarWidth: 264,
     dockOpen: true,
@@ -86,6 +90,7 @@ function normalizeLayout(input: Record<string, unknown>, defaults: LayoutState, 
   }
   const activeGroupId = input.activeGroupId === 'secondary' && groups.length === 2 ? 'secondary' : 'main';
   return {
+    theme: input.theme === 'light' || input.theme === 'dark' ? input.theme : 'system',
     sidebarCollapsed: input.sidebarCollapsed === true,
     sidebarWidth: clampNumber(input.sidebarWidth, 264, 220, 380),
     dockOpen: input.dockOpen !== false,
@@ -108,6 +113,7 @@ let persistTimer: number | undefined;
 function persistLayout(): void {
   try {
     const layout = {
+      theme: state.theme,
       sidebarCollapsed: state.sidebarCollapsed,
       sidebarWidth: state.sidebarWidth,
       dockOpen: state.dockOpen,
@@ -161,6 +167,11 @@ export const layoutStore = {
   subscribe(listener: () => void): () => void {
     listeners.add(listener);
     return () => listeners.delete(listener);
+  },
+  setTheme(theme: ThemePreference): void {
+    if (state.theme === theme) return;
+    patch({ theme });
+    persistLayout();
   },
   toggleSidebar(): void {
     patch({ sidebarCollapsed: !state.sidebarCollapsed });

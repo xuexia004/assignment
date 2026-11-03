@@ -2,6 +2,27 @@
 
 All notable changes to Paper Agent are documented here.
 
+## [1.0.0] - 2026-11-02
+
+### Added
+
+- A visible “并行优化” switch beside the paper count. Off submits sequential execution; on submits bounded parallel execution. The performance panel displays the task's actual execution mode.
+- One real sequential/parallel comparison through MainAgent and the official MCP client/server, with a fixed question/query, identical ranked selector input and PDF hashes, isolated directories and disabled caches. Wall time fell from 257.77 s to 141.08 s in this pair (45.27%). See `docs/并行优化真实实验_20261102.md` and its measurement JSON.
+
+### Changed
+
+- Rank all deduplicated candidates with the existing semantic/RRF pipeline, then submit the first 20 complete titles/abstracts to the selection Agent; submit all when fewer than 20 exist. Retain later candidates for ordered PDF replacement.
+- Preserve author-provided keywords when explicitly available; keep the raised complete-abstract input budget and bounded batch selection.
+- Expose research notes, source Markdown and PDF as peer reading views. Task metrics show semantic Top-k cosine scores, Agent scores and runtime separately; execution details stay under “执行记录”.
+- Apply conservative duplicate-finding normalization without merging different numerical, conditional or negative claims.
+- Align Python, Electron, renderer and lockfile versions at 1.0.0; API remains v3.
+
+### Validation and actual limits
+
+- Local checks: Python 423 passed / 3 skipped; Ruff, TypeScript and production build passed; frontend 17/17; Electron 18/18; source desktop E2E 18 groups; Mock HTTP desktop E2E 10 groups.
+- Both real runs produced three PDFs, three Markdown files, three research notes and a partial report. Validated chunks changed from 16/21 to 14/21; fulltext-scope notes changed from one to zero. The additional quality gate did not pass. Publication follows the user's time-reduction condition, without a claim of equal or improved research quality.
+- This is one paired observation, not a repeated statistical benchmark. No installer or macOS build was produced for this release; the GitHub release contains source and experiment records.
+
 ## [0.3.0] - 2026-10-28
 
 ### Added

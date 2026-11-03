@@ -102,31 +102,10 @@ class DemoLLM:
                                 "final_score": round(1 - index * .025, 4),
                                 "selection_reason": "DEMO ONLY: injected fixture response; no real LLM."}
                                for index, paper in enumerate(selected, 1)]}
-        if task == "summarize_chunk":
-            segments = [segment for segment in payload["segments"] if segment.get("text", "").strip()]
-            segment = segments[0]
-            evidence = [{"quote": segment["text"][:140],
-                         "claim": "This is fixture text, not an empirical finding.",
-                         "evidence_type": "author_claim",
-                         "source_segment_id": segment.get("segment_id")}]
-            return {
-                "research_question": "DEMO ONLY: verify the local research workflow.",
-                "core_idea": "Keep stable identifiers and traceable fixture evidence.",
-                "methods": ["Synthetic dependency injection; not a scientific method result."],
-                "experiments": ["No real experiment was conducted."],
-                "findings": ["No empirical finding is asserted."],
-                "limitations": ["Fixtures cannot validate real paper relevance or LLM quality."],
-                "author_claims": ["The supplied document labels itself as a synthetic fixture."],
-                "system_inferences": [], "speculative_ideas": [], "evidence": evidence,
-            }
-        if task == "merge_paper_summary":
-            evidence_ids = list(dict.fromkeys(
-                item["evidence_id"] for item in payload.get("verified_evidence", [])
-                if isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
-            ))
-            return self._summary([
-                {"evidence_id": evidence_id} for evidence_id in evidence_ids[:3]
-            ])
+        if task == "summarize_paper":
+            report = self._summary([])
+            report.pop("evidence")
+            return report
         if task == "generate_research_report":
             summaries = payload["summaries"]
             ids = [summary["paper_id"] for summary in summaries]

@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
-from paper_agent.config import Settings
+from paper_agent.config import SELECTOR_CANDIDATE_LIMIT, Settings
 from paper_agent.llm_client import ChatClient, LLMClientProtocol, LLMError, LLMOutputError
 from paper_agent.models import ErrorInfo, Paper
 
@@ -45,6 +45,10 @@ that merely discusses the object. Do not claim coverage that is absent, do not t
 related variant as the original, do not select a candidate solely because a target is
 named, and do not invent titles, IDs or scores.
 The final selection, order and scores remain your judgment; target hints never add candidates.
+For a final_cross_batch round, every original title and full abstract has already
+been evaluated in a leaf batch. The supplied batch_judgment fields are validated
+earlier decisions, not source evidence. Compare these shortlisted papers globally
+using their titles and judgments; batch scores alone must not dictate the result.
 When the named object is not covered by a judged original, say so explicitly in the
 relevant selection_reason instead of implying that a derivative covers it.
 Return exactly requested_count candidates, using unique consecutive ranks starting at 1 and
@@ -104,12 +108,7 @@ def build_selection_payload(
     targets: list[str] | None = None,
     target_matches: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Build bounded prompt data and a record of evidence truncation.
-
-    The caller supplies already limited candidates. Abstracts share one character
-    cap, found by binary search; titles/IDs/idea are never silently truncated.
-    If required metadata alone exceeds the budget, fail before making a request.
-    """
+    """Submit complete titles/abstracts, or require the caller to form batches."""
     candidate_ids = {p.paper_id for p in candidates}
     matches_by_paper = (target_matches or {}).get("paper_matches", {})
     records = []
@@ -137,7 +136,7 @@ def build_selection_payload(
         record = {
             "paper_id": p.paper_id,
             "title": p.title,
-            "abstract": "",
+            "abstract": p.abstract,
             "year": p.year,
             "sources": p.sources,
             "initial_score": p.initial_score,
@@ -198,19 +197,8 @@ def build_selection_payload(
     budget = settings.selector_input_token_budget or settings.llm_input_token_budget
     if _input_units(payload) > budget:
         raise SelectorError(
-            "selector_input_budget", "Selector metadata exceeds the configured input budget"
+            "selector_input_budget", "完整标题与摘要超过单次输入预算，需要分批评估。"
         )
-    low, high = 0, max((len(p.abstract) for p in candidates), default=0)
-    while low < high:
-        cap = (low + high + 1) // 2
-        for record, paper in zip(records, candidates, strict=True):
-            record["abstract"] = paper.abstract[:cap]
-        if _input_units(payload) <= budget:
-            low = cap
-        else:
-            high = cap - 1
-    for record, paper in zip(records, candidates, strict=True):
-        record["abstract"] = paper.abstract[:low]
     audit = {
         "input_budget": budget,
         "input_units": _input_units(payload),
@@ -252,6 +240,103 @@ def build_selection_payload(
     return payload, audit
 
 
+def _selection_batches(idea, candidates, k, settings, targets, target_matches):
+    """Partition before any call, never dropping a paper or shortening an abstract."""
+    batches = []
+    current = []
+    for paper in candidates:
+        try:
+            build_selection_payload(
+                idea, [*current, paper], k, settings,
+                targets=targets, target_matches=target_matches,
+            )
+        except SelectorError:
+            if not current:
+                raise
+            batches.append(current)
+            # An individually oversized record must fail explicitly, before
+            # spending calls on an incomplete subset of the original input.
+            build_selection_payload(
+                idea, [paper], k, settings, targets=targets, target_matches=target_matches,
+            )
+            current = [paper]
+        else:
+            current.append(paper)
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _cross_batch_payload(idea, finalists, decisions, k, settings):
+    payload = {
+        "idea": idea, "requested_count": min(k, len(finalists)),
+        "selection_round": "final_cross_batch",
+        "evidence_scope": "full_abstracts_evaluated_in_leaf_batches",
+        "candidates": [{"paper_id": paper.paper_id, "title": paper.title} for paper in finalists],
+    }
+    budget = settings.selector_input_token_budget or settings.llm_input_token_budget
+    # All source abstracts were submitted intact in the leaf rounds. Only
+    # previous model judgments are bounded in this aggregation round.
+    cap = max((len(item.selection_reason) for item in decisions.values()), default=0)
+    while True:
+        for record in payload["candidates"]:
+            item = decisions[record["paper_id"]]
+            record["batch_judgment"] = {
+                "score": item.final_score, "reason": item.selection_reason[:cap],
+            }
+        if _input_units(payload) <= budget:
+            return payload, {
+                "input_units": _input_units(payload), "judgment_character_cap": cap,
+                "candidate_ids": [paper.paper_id for paper in finalists],
+            }
+        if cap == 0:
+            raise SelectorError("selector_input_budget", "跨批次终选标题仍超过输入预算，请提高预算。")
+        cap //= 2
+
+
+async def _rank_all_candidates(model, idea, candidates, count, settings, audit, targets, target_matches):
+    batches = _selection_batches(idea, candidates, count, settings, targets, target_matches)
+    audit.update(
+        selection_mode="single_pass" if len(batches) == 1 else "batched_then_global",
+        batch_count=len(batches), batch_audits=[], evaluated_candidate_ids=[],
+        abstract_lengths=[], llm_call_count=0,
+    )
+    shortlisted = {}
+    single_ranked = None
+    for index, batch in enumerate(batches, 1):
+        payload, batch_audit = build_selection_payload(
+            idea, batch, count, settings, targets=targets, target_matches=target_matches,
+        )
+        batch_audit.update(batch_number=index, candidate_ids=[paper.paper_id for paper in batch])
+        audit["batch_audits"].append(batch_audit)
+        try:
+            ranked = await _request_valid_selection(model, payload, batch, count, settings, batch_audit)
+        finally:
+            if len(batches) == 1:
+                audit.update(batch_audit)
+            else:
+                audit["llm_call_count"] += batch_audit.get("llm_call_count", 0)
+        audit["evaluated_candidate_ids"].extend(paper.paper_id for paper in batch)
+        batch_audit["selected_ids"] = [item.paper_id for item in ranked[:count]]
+        batch_audit["llm_ranking"] = [item.model_dump() for item in ranked]
+        if len(batches) > 1:
+            audit["abstract_lengths"].extend(batch_audit["abstract_lengths"])
+        for item in ranked[:count]:
+            shortlisted[item.paper_id] = item
+        single_ranked = ranked
+    if len(batches) == 1:
+        # Retain the existing audit fields for callers and historical readers.
+        audit.update(audit["batch_audits"][0])
+        return single_ranked
+    finalists = [paper for paper in candidates if paper.paper_id in shortlisted]
+    payload, final_audit = _cross_batch_payload(idea, finalists, shortlisted, count, settings)
+    audit["final_review"] = final_audit
+    try:
+        return await _request_valid_selection(model, payload, finalists, count, settings, final_audit)
+    finally:
+        audit["llm_call_count"] += final_audit.get("llm_call_count", 0)
+
+
 def validate_selection(
     value: Any, candidates: list[Paper], k: int | None = None,
 ) -> list[SelectionItem]:
@@ -279,6 +364,10 @@ def validate_selection(
         raise SelectorError("selector_invalid_output", "Selector 的相关性理由不能为空")
     if any(a.final_score < b.final_score for a, b in zip(ordered, ordered[1:])):
         raise SelectorError("selector_invalid_output", "Selector 分数必须按排名非递增")
+    candidate_order = {p.paper_id: i for i, p in enumerate(candidates)}
+    ordered.sort(key=lambda p: (-p.final_score, candidate_order[p.paper_id]))
+    for rank, item in enumerate(ordered, 1):
+        item.rank = rank
     return ordered
 
 
@@ -375,6 +464,17 @@ def _initial_audit(
         "agent": "llm_selector",
         "evidence_scope": "title_abstract_only",
         "requested_k": k,
+        "available_count": len(papers),
+        "effective_k": min(k, len(candidates)),
+        "candidate_shortfall": max(0, k - len(candidates)),
+        "candidate_limit": SELECTOR_CANDIDATE_LIMIT,
+        "initial_top_k": [
+            p.paper_id for p in sorted(
+                papers,
+                key=lambda p: p.initial_score if p.initial_score is not None else -1,
+                reverse=True,
+            )[:k]
+        ],
         "input_candidate_order": [p.paper_id for p in papers],
         "initial_scores": {p.paper_id: p.initial_score for p in papers},
         "submitted_candidate_order": [p.paper_id for p in candidates],
@@ -465,24 +565,21 @@ async def select_top_k(
         raise ValueError("Selector 输入去重后必须包含唯一候选 ID")
     if not papers:
         return []
-    count = min(k, len(papers))
-    if settings.candidate_limit < count:
-        raise ValueError("候选上限必须覆盖请求的 Top-k")
-    candidates = papers[:settings.candidate_limit]
+    candidates = papers[:SELECTOR_CANDIDATE_LIMIT]
+    count = min(k, len(candidates))
     audit = _initial_audit(papers, candidates, k, targets, target_matches)
     try:
-        payload, budget_audit = build_selection_payload(
-            idea, candidates, count, settings, targets=targets, target_matches=target_matches,
-        )
-        audit.update(budget_audit)
+        # Validate every complete record and form a complete partition before
+        # any external model call (including the metadata-only budget check).
+        _selection_batches(idea, candidates, count, settings, targets, target_matches)
         try:
             model = llm if llm is not None else ChatClient(settings)
         except Exception:
             raise SelectorError(
                 "selector_llm_failure", "Selector model initialization failed"
             ) from None
-        ranked = await _request_valid_selection(
-            model, payload, candidates, count, settings, audit,
+        ranked = await _rank_all_candidates(
+            model, idea, candidates, count, settings, audit, targets, target_matches,
         )
     except SelectorError as failure:
         if settings.selector_fallback == "initial_ranking":

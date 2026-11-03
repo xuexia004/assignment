@@ -162,6 +162,7 @@ def test_environment_forwards_budgets_and_cache_policy(tmp_path):
     assert env["PAPER_AGENT_DOWNLOAD_CONCURRENCY"] == "2"
     assert env["PAPER_AGENT_MERGED_CANDIDATE_LIMIT"] == "30"
     assert env["PAPER_AGENT_SELECTOR_INPUT_TOKEN_BUDGET"] == "48000"
+    assert env["PAPER_AGENT_ANALYSIS_INPUT_TOKEN_BUDGET"] == "256000"
     assert env["PAPER_AGENT_REPORT_INPUT_TOKEN_BUDGET"] == "64000"
     assert env["PAPER_AGENT_MAX_FULLTEXT_ATTEMPTS"] == "30"
     assert env["PAPER_AGENT_DOWNLOAD_CANDIDATE_TIMEOUT"] == "45.0"

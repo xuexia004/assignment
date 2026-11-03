@@ -221,7 +221,7 @@ def test_invalid_json_recovers_with_bounded_retry_and_sanitized_feedback():
 def test_retry_feedback_does_not_exceed_selector_input_budget():
     papers = candidates(3)
     _, initial_audit = build_selection_payload("Memory", papers, 3, Settings())
-    settings = replace(Settings(), llm_input_token_budget=initial_audit["input_units"])
+    settings = replace(Settings(), selector_input_token_budget=initial_audit["input_units"])
     llm = FakeLLM(outcomes=[
         LLMOutputError("invalid"), response(["p2", "p1", "p0"]),
     ])
@@ -294,30 +294,26 @@ def test_explicit_initial_ranking_fallback_is_marked_and_does_not_claim_model_sc
     assert len(selected[1].metadata["selection"]["final_order"]) == 3
 
 
-def test_candidate_limit_excludes_later_candidates_from_model_and_audits_them():
-    papers = candidates(20)
+def test_ranked_top_twenty_are_submitted_despite_legacy_candidate_limit():
+    papers = candidates(21)
     settings = replace(Settings(), candidate_limit=10)
-    llm = FakeLLM(response(["p9", "p8", "p7"]))
+    llm = FakeLLM(response(["p19", "p8", "p7"]))
     selected = asyncio.run(select_top_k("Memory", papers, 3, settings=settings, llm=llm))
-    assert len(llm.calls[0][1]["candidates"]) == 10
-    assert selected[0].metadata["selection"]["excluded_by_candidate_limit"] == [
-        f"p{i}" for i in range(10, 20)
-    ]
-    llm.response = response(["p11", "p8", "p7"])
-    with pytest.raises(SelectorError):
-        asyncio.run(select_top_k("Memory", papers, 3, settings=settings, llm=llm))
+    assert len(llm.calls[0][1]["candidates"]) == 20
+    assert selected[0].paper_id == "p19"
+    assert selected[0].metadata["selection"]["excluded_by_candidate_limit"] == ["p20"]
+    assert selected[0].metadata["selection"]["evaluated_candidate_ids"] == [p.paper_id for p in papers[:20]]
 
 
-def test_long_multilingual_abstracts_share_budget_and_truncation_is_explicit():
+def test_individually_oversized_abstract_is_not_silently_truncated():
     papers = candidates()
     for paper in papers:
         paper.abstract = "长期记忆 costs \\ quoted \"\n" * 3000
-    settings = replace(Settings(), llm_input_token_budget=8000)
-    payload, audit = build_selection_payload("Memory", papers, 3, settings)
-    assert audit["input_units"] <= 8000
-    assert all(item["truncated"] for item in audit["abstract_lengths"])
-    assert all(item["submitted_chars"] > 0 for item in audit["abstract_lengths"])
-    assert payload["candidates"][0]["title"] == papers[0].title
+    settings = replace(Settings(), selector_input_token_budget=8000)
+    llm = FakeLLM()
+    with pytest.raises(SelectorError):
+        asyncio.run(select_top_k("Memory", papers, 3, settings=settings, llm=llm))
+    assert llm.calls == []
     assert papers[0].abstract.endswith("\n")
 
 
@@ -326,10 +322,61 @@ def test_required_metadata_over_budget_fails_before_calling_model():
     with pytest.raises(SelectorError) as failure:
         asyncio.run(select_top_k(
             "Research idea" * 2000, candidates(), 1,
-            settings=replace(Settings(), llm_input_token_budget=4000), llm=llm,
+            settings=replace(Settings(), selector_input_token_budget=4000), llm=llm,
         ))
     assert failure.value.error.code == "selector_input_budget"
     assert llm.calls == []
+
+
+class BatchChoosingLLM:
+    """Deterministic selector fixture, not a relevance or performance model."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def json(self, system, user):
+        payload = json.loads(user)
+        self.calls.append(payload)
+        ordered = sorted(payload["candidates"], key=lambda item: int(item["paper_id"][1:]), reverse=True)
+        return response([item["paper_id"] for item in ordered[:payload["requested_count"]]])
+
+
+@pytest.mark.parametrize("available", [2, 19, 20, 21, 98])
+def test_first_twenty_or_fewer_complete_titles_and_abstracts_reach_model(available):
+    papers = candidates(available)
+    for paper in papers:
+        paper.abstract *= 10
+    llm = BatchChoosingLLM()
+    selected = asyncio.run(select_top_k("Memory", papers, 3, llm=llm))
+    assert [p.paper_id for p in selected] == [p.paper_id for p in reversed(papers[:20])][:3]
+    assert len(llm.calls) == 1
+    assert [(p["title"], p["abstract"]) for p in llm.calls[0]["candidates"]] == [
+        (p.title, p.abstract) for p in papers[:20]
+    ]
+    assert selected[0].metadata["selection"]["excluded_by_candidate_limit"] == [p.paper_id for p in papers[20:]]
+
+
+def test_budget_batches_only_evaluate_top_twenty_full_abstracts_then_select_globally():
+    papers = candidates(98)
+    for paper in papers:
+        paper.abstract *= 10
+    llm = BatchChoosingLLM()
+    selected = asyncio.run(select_top_k(
+        "Memory", papers, 3, llm=llm,
+        settings=replace(Settings(), selector_input_token_budget=20000),
+    ))
+    assert [p.paper_id for p in selected] == ["p19", "p18", "p17"]
+    leaves = [call for call in llm.calls if call.get("selection_round") != "final_cross_batch"]
+    assert len(leaves) > 1
+    submitted = [item for call in leaves for item in call["candidates"]]
+    assert [item["paper_id"] for item in submitted] == [p.paper_id for p in papers[:20]]
+    assert [item["abstract"] for item in submitted] == [p.abstract for p in papers[:20]]
+    assert llm.calls[-1]["selection_round"] == "final_cross_batch"
+    audit = selected[0].metadata["selection"]
+    assert audit["llm_call_count"] == len(llm.calls)
+    assert len(audit["evaluated_candidate_ids"]) == 20
+    assert audit["excluded_by_candidate_limit"] == [p.paper_id for p in papers[20:]]
+    assert all(not item["truncated"] for item in audit["abstract_lengths"])
 
 
 @pytest.mark.parametrize("k", [0, -1, True, 1.0, 101])
@@ -346,10 +393,10 @@ def test_empty_candidates_no_model_call_and_invalid_inputs_are_not_hidden_by_fal
         asyncio.run(select_top_k("  ", candidates(), 3, llm=llm))
     with pytest.raises(ValueError, match="唯一候选"):
         asyncio.run(select_top_k("Memory", [candidates()[0]] * 2, 1, llm=llm))
-    with pytest.raises(ValueError, match="覆盖"):
-        asyncio.run(select_top_k(
-            "Memory", candidates(), 5, settings=replace(Settings(), candidate_limit=3), llm=llm,
-        ))
+    llm.response = response(["p4", "p3", "p2", "p1", "p0"])
+    assert len(asyncio.run(select_top_k(
+        "Memory", candidates(), 5, settings=replace(Settings(), candidate_limit=3), llm=llm,
+    ))) == 5
 
 
 @pytest.mark.parametrize("k", [3, 5, 8])
@@ -374,3 +421,29 @@ def test_cancellation_propagates_instead_of_producing_a_fallback():
 
 def test_selector_prompt_requires_chinese_reason():
     assert "Simplified Chinese" in SELECTOR_SYSTEM_PROMPT
+
+
+def test_equal_scores_follow_candidate_order_and_normalize_ranks():
+    papers = candidates(3)
+    value = response(['p2', 'p0', 'p1'])
+    for item in value['papers']:
+        item['final_score'] = 0.8
+    ranked = validate_selection(value, papers, 3)
+    assert [p.paper_id for p in ranked] == ['p0', 'p1', 'p2']
+    assert [p.rank for p in ranked] == [1, 2, 3]
+
+
+def test_shortfall_audit_preserves_initial_top_k_and_input():
+    papers = candidates(3)
+    papers[2].initial_score = 1.0
+    original = copy.deepcopy([p.model_dump() for p in papers])
+    selected = asyncio.run(select_top_k(
+        'Agent memory', papers, 5, llm=FakeLLM(response(['p1', 'p2', 'p0'])),
+    ))
+    audit = selected[0].metadata['selection']
+    assert audit['requested_k'] == 5
+    assert audit['effective_k'] == 3
+    assert audit['candidate_shortfall'] == 2
+    assert audit['initial_top_k'] == ['p0', 'p2', 'p1']
+    assert audit['final_order'] == ['p1', 'p2', 'p0']
+    assert [p.model_dump() for p in papers] == original

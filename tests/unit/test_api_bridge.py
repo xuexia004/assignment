@@ -68,6 +68,14 @@ def _app_at(tmp_path: Path):
     return app, manager, endpoint
 
 
+def test_desktop_research_uses_semantic_ranking_despite_legacy_keyword_setting(tmp_path):
+    legacy = Settings(ranker="keyword", candidate_limit=1, data_dir=tmp_path)
+    manager = Workbench(legacy, root=tmp_path / "service")
+    assert manager.settings().ranker == "semantic"
+    assert legacy.ranker == "keyword"  # Explicit CLI/experiment settings remain usable.
+    assert manager.save_config({"default_top_k": 8})["default_top_k"] == 8
+
+
 async def _request(app, method: str, path: str, *, token: str | None = TOKEN,
                    origin: str | None = None, json_body: dict | None = None):
     headers = {"host": "127.0.0.1"}
@@ -102,7 +110,7 @@ def test_service_info_matches_contract_and_never_contains_tokens_or_keys(tmp_pat
     info = response.json()
     assert response.status_code == 200
     assert set(info) == {"version", "api_version", "pid", "active_jobs", "data_root", "config_path"}
-    assert info["version"] == "0.3.0"
+    assert info["version"] == "1.0.0"
     assert info["api_version"] == 3
     assert info["pid"] == endpoint["pid"]
     assert info["active_jobs"] == 0
@@ -134,7 +142,7 @@ def test_service_info_checks_pid_and_canonical_data_root(monkeypatch, tmp_path):
     root = (tmp_path / "user-data").resolve()
     endpoint = {"url": "http://127.0.0.1:43871", "mcp_url": "http://127.0.0.1:43871/mcp",
                 "pid": 1234, "api_version": API_VERSION, "data_root": str(root), "token": TOKEN}
-    valid = {"version": "0.3.0", "api_version": API_VERSION, "pid": 1234, "active_jobs": 0,
+    valid = {"version": "1.0.0", "api_version": API_VERSION, "pid": 1234, "active_jobs": 0,
              "data_root": str(root), "config_path": str(root / "config.json")}
 
     class Response:
@@ -169,7 +177,7 @@ def test_start_refuses_to_attach_or_spawn_over_an_old_service(monkeypatch, tmp_p
 def test_service_control_json_is_private_only_for_start(monkeypatch, capsys, tmp_path):
     endpoint = {"url": "http://127.0.0.1:43871", "mcp_url": "http://127.0.0.1:43871/mcp",
                 "pid": 1234, "api_version": API_VERSION, "data_root": str(tmp_path), "token": TOKEN}
-    info = {"version": "0.3.0", "api_version": API_VERSION, "pid": 1234, "active_jobs": 0,
+    info = {"version": "1.0.0", "api_version": API_VERSION, "pid": 1234, "active_jobs": 0,
             "data_root": str(tmp_path), "config_path": str(tmp_path / "config.json")}
     monkeypatch.setattr(service_control, "ensure_service", lambda _root: endpoint)
     monkeypatch.setattr(service_control, "read_descriptor", lambda _root: endpoint)
@@ -293,6 +301,73 @@ def test_sse_replays_after_sequence_then_emits_terminal_done(tmp_path):
     assert "id: 1" not in response.text
     assert (f'event: done\ndata: {{"job_id": "{JOB_ID}", "status": "completed", '
             '"delivery_status": "preliminary_notes"}') in response.text
+
+
+def test_sse_replays_more_than_800_events_after_restart_with_redaction(tmp_path):
+    app, manager, _ = _app_at(tmp_path)
+    session = manager.create_session()
+    job = {"job_id": JOB_ID, "session_id": session["session_id"], "idea": "fixture archive",
+           "status": "completed", "created_at": "", "updated_at": "", "result": None,
+           "artifacts": [], "events": [], "error": None}
+    manager.jobs[JOB_ID] = job
+    key = manager.settings().llm_api_key
+    for number in range(1005):
+        manager.event(job, "progress", message=f"fixture {number} {key}", persist=False)
+    manager.persist_job(job)
+    assert len(job["events"]) == 800
+    assert key not in manager._event_path(job).read_text(encoding="utf-8")
+    reopened = Workbench(_settings(tmp_path), root=manager.root, config_path=manager.config_path)
+    app.state.workbench = reopened
+    response = asyncio.run(_request(app, "GET", f"/api/jobs/{JOB_ID}/events?after=3"))
+    events = [json.loads(line[6:]) for line in response.text.splitlines()
+              if line.startswith("data: ") and '"seq"' in line]
+    assert [event["seq"] for event in events] == list(range(4, 1006))
+    assert not any(event["data"].get("history_gap") for event in events)
+    assert key not in response.text and "[已隐藏]" in response.text
+    assert "event: done" in response.text
+    # An interrupted final append must not swallow the next event on restart.
+    path = reopened._event_path(reopened.jobs[JOB_ID])
+    with path.open("ab") as stream:
+        stream.write(b'{"event":')
+    reopened.event(reopened.jobs[JOB_ID], "progress", message="after torn append")
+    assert reopened.events_after(reopened.jobs[JOB_ID], 1005)[0]["seq"] == 1006
+
+
+def test_sse_reports_an_unrecoverable_legacy_history_gap(tmp_path):
+    app, manager, _ = _app_at(tmp_path)
+    manager.jobs[JOB_ID] = {"job_id": JOB_ID, "status": "completed", "events": [
+        {"seq": 205, "timestamp": "fixture", "kind": "progress", "message": "retained",
+         "stage": "", "data": {}},
+    ]}
+    response = asyncio.run(_request(app, "GET", f"/api/jobs/{JOB_ID}/events?after=1"))
+    events = [json.loads(line[6:]) for line in response.text.splitlines()
+              if line.startswith("data: ") and '"seq"' in line]
+    assert [event["seq"] for event in events] == [204, 205]
+    assert events[0]["data"]["history_gap"] is True
+    assert "未被保存" in events[0]["message"]
+    assert events[1]["message"] == "retained"
+
+
+def test_sse_drains_a_terminal_event_created_during_replay(tmp_path, monkeypatch):
+    app, manager, _ = _app_at(tmp_path)
+    job = {"job_id": JOB_ID, "status": "running", "events": [
+        {"seq": 1, "timestamp": "fixture", "kind": "progress", "message": "running",
+         "stage": "", "data": {}},
+    ]}
+    manager.jobs[JOB_ID] = job
+    original = manager.events_after
+
+    def replay(value, after):
+        result = original(value, after)
+        if value["status"] == "running":
+            value["status"] = "completed"
+            value["events"].append({"seq": 2, "timestamp": "fixture", "kind": "status",
+                                    "message": "completed", "stage": "", "data": {}})
+        return result
+
+    monkeypatch.setattr(manager, "events_after", replay)
+    response = asyncio.run(_request(app, "GET", f"/api/jobs/{JOB_ID}/events"))
+    assert response.text.index("id: 2") < response.text.index("event: done")
 
 
 def test_service_shutdown_refuses_active_jobs(tmp_path):
@@ -449,7 +524,7 @@ def test_execution_mode_request_is_recorded_separately_without_changing_candidat
     assert job["result"]["execution_mode"] == expected_actual
     assert job["result"]["brief"]["next_step"]["action"]
     assert captured[0].source_limit == 20
-    assert captured[0].candidate_limit == 15
+    assert captured[0].candidate_limit == 20
     assert config["default_execution_mode"] == "auto"
 
 

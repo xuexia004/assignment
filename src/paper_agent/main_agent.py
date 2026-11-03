@@ -86,6 +86,7 @@ def server_environment(settings: Settings) -> dict[str, str]:
         "source_limit": "PAPER_AGENT_SOURCE_LIMIT", "candidate_limit": "PAPER_AGENT_CANDIDATE_LIMIT",
         "merged_candidate_limit": "PAPER_AGENT_MERGED_CANDIDATE_LIMIT",
         "selector_input_token_budget": "PAPER_AGENT_SELECTOR_INPUT_TOKEN_BUDGET",
+        "analysis_input_token_budget": "PAPER_AGENT_ANALYSIS_INPUT_TOKEN_BUDGET",
         "report_input_token_budget": "PAPER_AGENT_REPORT_INPUT_TOKEN_BUDGET",
         "max_fulltext_attempts": "PAPER_AGENT_MAX_FULLTEXT_ATTEMPTS",
         "ranker": "PAPER_AGENT_RANKER", "top_k": "PAPER_AGENT_TOP_K",

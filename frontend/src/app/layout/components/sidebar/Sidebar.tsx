@@ -3,14 +3,12 @@ import { useState } from 'react';
 import { useWorkspaceState, workspaceStore } from '../../../stores/workspaceStore';
 import { layoutStore, useLayoutState } from '../../stores/layoutStore';
 import { formatDate } from '../../../utils/format';
-import { statusLabel } from '../../../utils/status';
 
 export function Sidebar({ compact }: { compact: boolean }) {
   const workspace = useWorkspaceState();
   const layout = useLayoutState();
   const [filter, setFilter] = useState('');
   const shortMode = compact || layout.sidebarCollapsed;
-  // A hidden search input must not continue filtering the collapsed navigation rail.
   const conversations = shortMode
     ? workspace.conversations
     : workspace.conversations.filter(item => item.title.toLocaleLowerCase().includes(filter.toLocaleLowerCase()));
@@ -34,7 +32,7 @@ export function Sidebar({ compact }: { compact: boolean }) {
       {!workspace.conversations.length && !workspace.loadingConversation && <p className="sidebar-empty">还没有保存的会话。新建会话不会提交研究。</p>}
       {conversations.map(item => {
         const readOnly = (item as typeof item & { read_only?: boolean }).read_only === true;
-        return <button key={item.conversation_id} className={`conversation-row ${selectedId === item.conversation_id ? 'is-selected' : ''}`} type="button" title={`${item.title} · ${statusLabel(item.status)}${readOnly ? ' · 旧版只读' : ''}`} aria-current={selectedId === item.conversation_id ? 'page' : undefined} onClick={() => void workspaceStore.selectConversation(item.conversation_id)}>
+        return <button key={item.conversation_id} className={`conversation-row ${selectedId === item.conversation_id ? 'is-selected' : ''}`} type="button" title={`${item.title}${readOnly ? ' · 旧版只读' : ''}`} aria-current={selectedId === item.conversation_id ? 'page' : undefined} onClick={() => void workspaceStore.selectConversation(item.conversation_id)}>
           <span className={`conversation-status status-${item.status}`} aria-hidden="true"><i/></span>
           <span className="conversation-row-copy"><strong>{item.title}</strong>{!shortMode && <small>{readOnly ? '旧版记录 · 只读' : formatDate(item.updated_at)}</small>}</span>
           {!shortMode && item.status === 'running' && <span className="running-label">运行中</span>}

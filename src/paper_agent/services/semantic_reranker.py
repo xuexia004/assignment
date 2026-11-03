@@ -18,6 +18,7 @@ from collections import OrderedDict
 from typing import Any
 
 from paper_agent.models import Paper
+from paper_agent.services.author_keywords import author_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,13 @@ def _content_key(kind: str, *parts: str) -> str:
 def _paper_text(paper: Paper) -> str:
     title = " ".join(paper.title.split())
     abstract = " ".join(paper.abstract.split())
-    return title if not abstract else title + "\n" + abstract
+    keywords = author_keywords(paper)
+    parts = [title]
+    if keywords:
+        parts.append("Author keywords: " + "; ".join(keywords))
+    if abstract:
+        parts.append(abstract)
+    return "\n".join(parts)
 
 
 def _load_model():

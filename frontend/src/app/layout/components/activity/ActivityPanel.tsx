@@ -26,8 +26,7 @@ export function ActivityPanel() {
   const empty = !job && !result;
   if (empty) return <div className="panel-empty"><span><Clock3 size={20}/></span><strong>还没有执行记录</strong><p>发起研究后，服务端记录的阶段、原始错误与工具调用会显示在这里。</p></div>;
   return <div className="activity-view">
-    <header className="panel-intro"><div><span className="eyebrow">按需查看诊断</span><h2>执行记录</h2></div>{job && <span className={`status-chip status-${job.status}`}>{statusLabel(job.status)}</span>}</header>
-    <p className="panel-subtitle">这里保留原始错误码、任务状态、排序、候选与审计信息。默认折叠，不影响前方的研究正文。</p>
+    <header className="panel-intro"><h2>执行记录</h2></header>
     {job && <div className="job-facts"><span><small>任务 ID</small><code>{job.job_id}</code></span><span><small>更新时间</small>{formatDate(job.updated_at)}</span>{config?.model && <span><small>当前模型</small>{config.model}</span>}{result?.run_id && <span><small>研究 run</small><code>{result.run_id}</code></span>}</div>}
     <details className="execution-log">
       <summary>展开执行记录 <span>{errorGroups.length} 类错误 · {events.length} 条事件 · {toolCalls.length} 次工具调用</span></summary>

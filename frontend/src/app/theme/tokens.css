@@ -91,8 +91,7 @@
   --ease-in-out: cubic-bezier(.4, 0, .2, 1);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
+:root[data-theme="dark"] {
     color-scheme: dark;
 
     --canvas: #161513;
@@ -164,5 +163,4 @@
     --shadow-sm: 0 2px 10px rgba(0, 0, 0, .24);
     --shadow-md: 0 10px 30px rgba(0, 0, 0, .34);
     --shadow-lg: 0 20px 52px rgba(0, 0, 0, .42);
-  }
 }

@@ -1,6 +1,6 @@
-# Agent 提示词 · v0.3.0
+# Agent 提示词 · v1.0.0
 
-本文件定义 Paper Agent v0.3.0 本地迭代的子 Agent 角色、输入输出和边界。所有角色以现有仓库为唯一基线，不重写 Electron/Python/MCP 架构。后续开发统一使用长期分支 `dev`，通过 PR 提交到 `main`，不新建版本号命名的开发分支。
+本文件定义 Paper Agent 本地迭代的子 Agent 角色、输入输出和边界。所有角色以现有仓库为唯一基线，不重写 Electron/Python/MCP 架构。后续开发统一使用长期分支 `dev`，通过 PR 提交到 `main`，不新建版本号命名的开发分支。
 
 ## 统一约束
 

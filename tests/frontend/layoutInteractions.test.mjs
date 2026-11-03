@@ -71,6 +71,7 @@ test('a collapsed or compact sidebar does not silently apply its hidden search f
   const source = readFileSync(path.join(root, 'frontend/src/app/layout/components/sidebar/Sidebar.tsx'), 'utf8');
   assert.match(source, /const shortMode = compact \|\| layout\.sidebarCollapsed;/);
   assert.match(source, /const conversations = shortMode\s*\? workspace\.conversations\s*:\s*workspace\.conversations\.filter/);
+  assert.ok(source.indexOf('const shortMode =') < source.indexOf('const conversations ='), 'shortMode must be declared before use');
 });
 
 test('dock popup menus close on Escape and outside clicks, restoring keyboard focus', () => {

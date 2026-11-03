@@ -132,9 +132,7 @@ export function summaryStatus(summary: Summary | undefined): SummaryStatus {
   const complete = Boolean(
     summary.summary_scope === 'fulltext'
     && !(summary.errors?.length)
-    && summary.overview?.trim() && summary.deep_analysis?.trim()
-    && summary.research_question?.trim() && summary.core_idea?.trim()
-    && summary.relevance?.trim() && summary.evidence?.length,
+    && summary.overview?.trim() && summary.deep_analysis?.trim(),
   );
   return complete ? 'complete' : 'usable_partial';
 }

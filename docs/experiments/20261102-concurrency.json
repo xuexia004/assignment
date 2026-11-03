@@ -1,0 +1,757 @@
+{
+  "protocol": {
+    "recorded_at": "2026-11-01T16:12:46.865335+00:00",
+    "idea": "大语言模型的不确定性估计如何判断何时应该拒答？请比较关键方法的校准方式、评测指标和适用局限，提出一个小规模可验证的研究方向。",
+    "query": "large language model uncertainty estimation for abstention",
+    "top_k": 3,
+    "selector_candidate_limit": 20,
+    "source_limit": 20,
+    "modes": [
+      "sequential",
+      "parallel"
+    ],
+    "runs_per_mode": 1,
+    "cache_enabled": false,
+    "cache_mode": "off",
+    "fresh_service_and_empty_artifact_directories_per_mode": true,
+    "transport": "desktop research API -> MainAgent -> official MCP client -> MCP server",
+    "release_minimum_wall_time_reduction": 0.25,
+    "release_requires": [
+      "same ranked selector input",
+      "same original Top-3 paper IDs",
+      "same acquired PDF hashes",
+      "no decrease in acquired PDFs, usable notes, paper-level synthesis or valid analyzed chunks",
+      "no delivery status regression",
+      "all required checks pass"
+    ],
+    "scope": "One real end-to-end run in each mode; fixed explicit query bypasses query-planner variation. No repeated trials or statistical significance claim."
+  },
+  "measurements": {
+    "sequential": {
+      "job_id": "b4d75ba247a34a7b905b06e46a899320",
+      "run_id": "70803a00a1ff440cbe67ddf99810095a",
+      "submitted_at_beijing": "2026-11-02T00:13:00+08:00",
+      "completed_at_beijing": "2026-11-02T00:17:18+08:00",
+      "status": "partial_success",
+      "delivery_status": "preliminary_notes",
+      "mode": "live",
+      "execution_mode": "sequential",
+      "top_k": 3,
+      "model": "deepseek-v4-flash",
+      "thinking_enabled": false,
+      "source_counts": {
+        "arxiv": 15,
+        "openalex": 20
+      },
+      "deduped_candidates": 32,
+      "ranking": {
+        "requested_ranker": "semantic",
+        "actual_ranker": "semantic",
+        "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "fallback_reason": null,
+        "fallback_message": null,
+        "candidate_count": 32,
+        "encoded_count": 32,
+        "cache_hits": 0,
+        "model_load_seconds": 16.370354,
+        "encode_seconds": 0.922013,
+        "duration_seconds": 17.297697,
+        "rrf_k": 60,
+        "rrf_weights": [
+          0.5,
+          0.5
+        ],
+        "vector_cache_capacity": 4096,
+        "vector_cache_size": 33,
+        "query_cache_hit": false,
+        "candidate_count_before_truncation": 32,
+        "candidate_count_after_truncation": 20,
+        "selector_input_count": 20,
+        "full_candidate_count": 32,
+        "author_keyword_paper_count": 0
+      },
+      "selection_input_check": {
+        "available_count": 20,
+        "submitted_count": 20,
+        "evaluated_count": 20,
+        "ranked_top_twenty_submitted": true,
+        "ranked_top_twenty_evaluated": true,
+        "abstract_record_count": 20,
+        "empty_abstract_count": 0,
+        "truncated_abstract_count": 0,
+        "full_original_abstracts": true,
+        "excluded_by_candidate_limit": [],
+        "selection_mode": "single_pass",
+        "batch_count": 1,
+        "llm_call_count": 1,
+        "input_budget_units": 256000,
+        "input_units": 37871,
+        "input_estimator": "conservative_utf8_bytes_including_system_prompt"
+      },
+      "semantic_top_k": [
+        {
+          "paper_id": "openalex:W4416034700",
+          "title": "Decoding Uncertainty: The Impact of Decoding Strategies for Uncertainty Estimation in Large Language Models",
+          "score": 0.725162
+        },
+        {
+          "paper_id": "openalex:W4412944773",
+          "title": "Towards Harmonized Uncertainty Estimation for Large Language Models",
+          "score": 0.71758
+        },
+        {
+          "paper_id": "openalex:W4389519290",
+          "title": "LM-Polygraph: Uncertainty Estimation for Language Models",
+          "score": 0.711137
+        }
+      ],
+      "semantic_top_k_mean": 0.7179596666666667,
+      "agent_top_k": [
+        {
+          "paper_id": "arxiv:2607.04430",
+          "title": "Uncertainty-Aware Abstention in Large Language Models with Provable Alignment Guarantees",
+          "score": 0.93,
+          "reason": "直接针对“不确定性分数如何转化为拒答规则”这一核心问题：提出基于置信区间的校准框架CIC，将任意不确定性分数转为风险受控的选择性回答阈值，并给出有限样本对齐保证；同时比较多种不确定性估计器与闭/开放式QA评测，与用户关于校准方式、评测指标和适用局限的比较需求高度契合，可作为小规模可验证方向的方法基础。",
+          "input_position_after_rrf": 8
+        },
+        {
+          "paper_id": "openalex:W7224429474",
+          "title": "FLOW-ABSTAIN: Modeling the Answerable Manifold for Query-Aware Abstention in Large Language Models",
+          "score": 0.86,
+          "reason": "聚焦查询感知的拒答（abstention），以隐空间密度估计实现无监督拒答，无需负样本；直接回应“何时应拒答”的问题，并提供跨模型与基准的评测，可作为与基于不确定性阈值方法对比的替代路线，但校准机制与风险保证较弱。",
+          "input_position_after_rrf": 6
+        },
+        {
+          "paper_id": "openalex:W4411934268",
+          "title": "Know Your Limits: A Survey of Abstention in Large Language Models",
+          "score": 0.8,
+          "reason": "系统综述LLM拒答研究，从查询、模型与人类价值三视角组织方法、基准与评测指标，并讨论局限与未来方向，对比较关键方法的校准方式、评测指标和适用局限具有较高参考价值；但为综述而非具体方法，直接证据强度低于前两篇。",
+          "input_position_after_rrf": 12
+        }
+      ],
+      "agent_top_k_mean": 0.8633333333333333,
+      "pdf_attempts": 3,
+      "replacement_attempts": 0,
+      "pdf_parseable_count": 3,
+      "markdown_file_count": 3,
+      "complete_conversions": 3,
+      "partial_conversions": 0,
+      "summary_records": 3,
+      "usable_summaries": 3,
+      "paper_level_synthesis_count": 3,
+      "chunk_notes_only_count": 0,
+      "research_chunk_audit": {
+        "openalex:W7224429474": {
+          "total": 5,
+          "selected": 5,
+          "valid": 5,
+          "failed": 0,
+          "unread": 0,
+          "failed_by_subreason": {},
+          "repair_used": true
+        },
+        "arxiv:2607.04430": {
+          "total": 5,
+          "selected": 5,
+          "valid": 3,
+          "failed": 2,
+          "unread": 0,
+          "failed_by_subreason": {
+            "source_evidence_validation_failed": 2,
+            "quote_not_found": 3
+          },
+          "repair_used": true
+        },
+        "openalex:W4411934268": {
+          "total": 11,
+          "selected": 11,
+          "valid": 8,
+          "failed": 3,
+          "unread": 0,
+          "failed_by_subreason": {
+            "source_evidence_validation_failed": 3,
+            "quote_not_found": 6
+          },
+          "repair_used": true
+        }
+      },
+      "merge_input_audit": {
+        "openalex:W7224429474": {
+          "input_estimator": "conservative_utf8_bytes_including_system_prompt_plus_64",
+          "budget": 24000,
+          "original": {
+            "chunk_count": 5,
+            "fact_count": 114,
+            "evidence_count": 16,
+            "input_units": 31153
+          },
+          "submitted": {
+            "chunk_count": 4,
+            "fact_count": 90,
+            "evidence_count": 8,
+            "input_units": 24000
+          },
+          "mode": "coverage_selected",
+          "lossy": true,
+          "loss_kinds": [
+            "facts_omitted",
+            "evidence_omitted"
+          ],
+          "coverage_gaps": [],
+          "merge_called": true,
+          "merge_completed": true,
+          "failure_reason": null
+        },
+        "arxiv:2607.04430": {
+          "input_estimator": "conservative_utf8_bytes_including_system_prompt_plus_64",
+          "budget": 24000,
+          "original": {
+            "chunk_count": 3,
+            "fact_count": 59,
+            "evidence_count": 10,
+            "input_units": 17349
+          },
+          "submitted": {
+            "chunk_count": 3,
+            "fact_count": 59,
+            "evidence_count": 10,
+            "input_units": 17349
+          },
+          "mode": "structured_full",
+          "lossy": false,
+          "loss_kinds": [],
+          "coverage_gaps": [],
+          "merge_called": true,
+          "merge_completed": true,
+          "failure_reason": null
+        },
+        "openalex:W4411934268": {
+          "input_estimator": "conservative_utf8_bytes_including_system_prompt_plus_64",
+          "budget": 24000,
+          "original": {
+            "chunk_count": 8,
+            "fact_count": 129,
+            "evidence_count": 20,
+            "input_units": 32342
+          },
+          "submitted": {
+            "chunk_count": 7,
+            "fact_count": 98,
+            "evidence_count": 10,
+            "input_units": 23921
+          },
+          "mode": "coverage_selected",
+          "lossy": true,
+          "loss_kinds": [
+            "facts_omitted",
+            "evidence_omitted"
+          ],
+          "coverage_gaps": [],
+          "merge_called": true,
+          "merge_completed": true,
+          "failure_reason": null
+        }
+      },
+      "summary_scope_counts": {
+        "partial_fulltext": 2,
+        "fulltext": 1
+      },
+      "summary_status_counts": {
+        "usable_partial": 3
+      },
+      "report_artifact_exists": true,
+      "report_valid": false,
+      "report_references": 3,
+      "stage_seconds": {
+        "search": 23.39461690000462,
+        "selection": 3.4597666000045137,
+        "fulltexts": 32.361202799998864,
+        "summarize": 178.30547970000043,
+        "report": 17.965202299994417,
+        "total": 255.5597237999973
+      },
+      "wall_seconds": 257.773677600002,
+      "llm_usage": {
+        "task_agent": {
+          "logical_calls": 29,
+          "requests": 29,
+          "successful_requests": 29,
+          "failed_requests": 0,
+          "retries": 0,
+          "invalid_outputs": 1,
+          "prompt_tokens": 130638,
+          "completion_tokens": 27422,
+          "total_tokens": 158060,
+          "usage_missing_responses": 0
+        },
+        "main_agent": {
+          "logical_calls": 1,
+          "requests": 1,
+          "successful_requests": 1,
+          "failed_requests": 0,
+          "retries": 0,
+          "invalid_outputs": 0,
+          "prompt_tokens": 948,
+          "completion_tokens": 129,
+          "total_tokens": 1077,
+          "usage_missing_responses": 0
+        },
+        "total": {
+          "logical_calls": 30,
+          "requests": 30,
+          "successful_requests": 30,
+          "failed_requests": 0,
+          "retries": 0,
+          "invalid_outputs": 1,
+          "prompt_tokens": 131586,
+          "completion_tokens": 27551,
+          "total_tokens": 159137,
+          "usage_missing_responses": 0
+        }
+      },
+      "cache_hits": {
+        "download": 0,
+        "conversion": 0
+      },
+      "http_requests": {
+        "source_search": 2,
+        "download": 4,
+        "total": 6
+      },
+      "unique_error_codes": {
+        "access_unavailable": 1,
+        "invalid_model_output": 2,
+        "partial_summary": 2,
+        "partial_synthesis": 2,
+        "partial_report": 1
+      },
+      "tool_calls": [
+        {
+          "tool": "run_research_pipeline",
+          "controller": "model_tool_call",
+          "status": "partial"
+        }
+      ],
+      "artifact_counts": {
+        "report": 1,
+        "summary": 3,
+        "chunks": 3,
+        "audit": 3,
+        "pdf": 3,
+        "markdown": 3,
+        "run": 1
+      },
+      "experiment_settings": {
+        "source_limit": 20,
+        "selector_input_token_budget": 256000,
+        "report_input_token_budget": 64000,
+        "chunk_chars": 12000,
+        "max_chunks": 12,
+        "llm_input_token_budget": 24000,
+        "llm_max_calls": 100,
+        "llm_max_total_tokens": 200000,
+        "llm_max_output_tokens": 4000,
+        "cache_enabled": false,
+        "cache_mode": "off",
+        "max_fulltext_attempts": 0
+      },
+      "source_hashes_unchanged": true,
+      "selector_input_sha256": "be7ef0599a98bf43f58762271d5c818a84b679db555a33bba72b7a4a19f14450",
+      "pdf_sha256": {
+        "arxiv:2607.04430": "a8ebca6300b5f49be1da7747d91fa20142580be4bae72d5eef9965168aaa6db2",
+        "openalex:W7224429474": "b6675c5c6c983e40298cd6fbb0df060bb2a494384913eae02c0f351114962b49",
+        "openalex:W4411934268": "f7aae419ec81c10457bc9cf696f061166a3e0f0c00ffa9a04d4e0c3c292fe465"
+      }
+    },
+    "parallel": {
+      "job_id": "c61be0c84af640aa9a524482cc43d58d",
+      "run_id": "5179f4aeda1a4a5fac42d6dcc77cb375",
+      "submitted_at_beijing": "2026-11-02T00:19:17+08:00",
+      "completed_at_beijing": "2026-11-02T00:21:38+08:00",
+      "status": "partial_success",
+      "delivery_status": "preliminary_notes",
+      "mode": "live",
+      "execution_mode": "concurrent",
+      "top_k": 3,
+      "model": "deepseek-v4-flash",
+      "thinking_enabled": false,
+      "source_counts": {
+        "openalex": 20,
+        "arxiv": 15
+      },
+      "deduped_candidates": 32,
+      "ranking": {
+        "requested_ranker": "semantic",
+        "actual_ranker": "semantic",
+        "model_name": "sentence-transformers/all-MiniLM-L6-v2",
+        "fallback_reason": null,
+        "fallback_message": null,
+        "candidate_count": 32,
+        "encoded_count": 32,
+        "cache_hits": 0,
+        "model_load_seconds": 14.261265,
+        "encode_seconds": 0.770757,
+        "duration_seconds": 15.036892,
+        "rrf_k": 60,
+        "rrf_weights": [
+          0.5,
+          0.5
+        ],
+        "vector_cache_capacity": 4096,
+        "vector_cache_size": 33,
+        "query_cache_hit": false,
+        "candidate_count_before_truncation": 32,
+        "candidate_count_after_truncation": 20,
+        "selector_input_count": 20,
+        "full_candidate_count": 32,
+        "author_keyword_paper_count": 0
+      },
+      "selection_input_check": {
+        "available_count": 20,
+        "submitted_count": 20,
+        "evaluated_count": 20,
+        "ranked_top_twenty_submitted": true,
+        "ranked_top_twenty_evaluated": true,
+        "abstract_record_count": 20,
+        "empty_abstract_count": 0,
+        "truncated_abstract_count": 0,
+        "full_original_abstracts": true,
+        "excluded_by_candidate_limit": [],
+        "selection_mode": "single_pass",
+        "batch_count": 1,
+        "llm_call_count": 1,
+        "input_budget_units": 256000,
+        "input_units": 37871,
+        "input_estimator": "conservative_utf8_bytes_including_system_prompt"
+      },
+      "semantic_top_k": [
+        {
+          "paper_id": "openalex:W4416034700",
+          "title": "Decoding Uncertainty: The Impact of Decoding Strategies for Uncertainty Estimation in Large Language Models",
+          "score": 0.725162
+        },
+        {
+          "paper_id": "openalex:W4412944773",
+          "title": "Towards Harmonized Uncertainty Estimation for Large Language Models",
+          "score": 0.71758
+        },
+        {
+          "paper_id": "openalex:W4389519290",
+          "title": "LM-Polygraph: Uncertainty Estimation for Language Models",
+          "score": 0.711137
+        }
+      ],
+      "semantic_top_k_mean": 0.7179596666666667,
+      "agent_top_k": [
+        {
+          "paper_id": "arxiv:2607.04430",
+          "title": "Uncertainty-Aware Abstention in Large Language Models with Provable Alignment Guarantees",
+          "score": 0.93,
+          "reason": "直接针对“不确定性分数如何转化为拒答规则”这一核心问题：提出基于置信区间的校准框架CIC，将任意不确定性分数转为风险受控的选择性回答阈值，并给出有限样本对齐保证；同时覆盖校准方式、评测指标（接受答案错误率、回答率）与适用局限（需可交换性假设、校准集），与用户研究问题高度吻合，适合作为小规模可验证方向的方法基线。",
+          "input_position_after_rrf": 8
+        },
+        {
+          "paper_id": "openalex:W7224429474",
+          "title": "FLOW-ABSTAIN: Modeling the Answerable Manifold for Query-Aware Abstention in Large Language Models",
+          "score": 0.86,
+          "reason": "聚焦查询感知的拒答（abstention），以隐空间密度估计（PCA+MAF）实现无监督拒答，无需负样本；直接回应“何时应拒答”，并讨论不可回答性的多种来源与连续似然信号，可作为与基于不确定性阈值方法对比的替代路线，局限在于未直接给出校准保证。",
+          "input_position_after_rrf": 6
+        },
+        {
+          "paper_id": "openalex:W4411934268",
+          "title": "Know Your Limits: A Survey of Abstention in Large Language Models",
+          "score": 0.82,
+          "reason": "拒答主题的系统综述，从查询、模型、人类价值三视角组织拒答方法、基准与评测指标，并讨论局限与未来方向；对比较关键方法的校准方式与评测指标具有较高参考价值，但本身不提出新的不确定性校准方法，属综述性证据。",
+          "input_position_after_rrf": 12
+        }
+      ],
+      "agent_top_k_mean": 0.87,
+      "pdf_attempts": 3,
+      "replacement_attempts": 0,
+      "pdf_parseable_count": 3,
+      "markdown_file_count": 3,
+      "complete_conversions": 3,
+      "partial_conversions": 0,
+      "summary_records": 3,
+      "usable_summaries": 3,
+      "paper_level_synthesis_count": 3,
+      "chunk_notes_only_count": 0,
+      "research_chunk_audit": {
+        "openalex:W7224429474": {
+          "total": 5,
+          "selected": 5,
+          "valid": 4,
+          "failed": 1,
+          "unread": 0,
+          "failed_by_subreason": {
+            "source_evidence_validation_failed": 1,
+            "quote_not_found": 2
+          },
+          "repair_used": true
+        },
+        "arxiv:2607.04430": {
+          "total": 5,
+          "selected": 5,
+          "valid": 3,
+          "failed": 2,
+          "unread": 0,
+          "failed_by_subreason": {
+            "source_evidence_validation_failed": 2,
+            "quote_not_found": 4
+          },
+          "repair_used": true
+        },
+        "openalex:W4411934268": {
+          "total": 11,
+          "selected": 11,
+          "valid": 7,
+          "failed": 4,
+          "unread": 0,
+          "failed_by_subreason": {
+            "schema_validation_failed": 1,
+            "source_evidence_validation_failed": 3,
+            "quote_not_found": 4
+          },
+          "repair_used": true
+        }
+      },
+      "merge_input_audit": {
+        "openalex:W7224429474": {
+          "input_estimator": "conservative_utf8_bytes_including_system_prompt_plus_64",
+          "budget": 24000,
+          "original": {
+            "chunk_count": 4,
+            "fact_count": 81,
+            "evidence_count": 12,
+            "input_units": 22354
+          },
+          "submitted": {
+            "chunk_count": 3,
+            "fact_count": 81,
+            "evidence_count": 12,
+            "input_units": 22354
+          },
+          "mode": "structured_full",
+          "lossy": false,
+          "loss_kinds": [],
+          "coverage_gaps": [],
+          "merge_called": true,
+          "merge_completed": true,
+          "failure_reason": null
+        },
+        "arxiv:2607.04430": {
+          "input_estimator": "conservative_utf8_bytes_including_system_prompt_plus_64",
+          "budget": 24000,
+          "original": {
+            "chunk_count": 3,
+            "fact_count": 59,
+            "evidence_count": 11,
+            "input_units": 16875
+          },
+          "submitted": {
+            "chunk_count": 3,
+            "fact_count": 59,
+            "evidence_count": 11,
+            "input_units": 16875
+          },
+          "mode": "structured_full",
+          "lossy": false,
+          "loss_kinds": [],
+          "coverage_gaps": [],
+          "merge_called": true,
+          "merge_completed": true,
+          "failure_reason": null
+        },
+        "openalex:W4411934268": {
+          "input_estimator": "conservative_utf8_bytes_including_system_prompt_plus_64",
+          "budget": 24000,
+          "original": {
+            "chunk_count": 7,
+            "fact_count": 81,
+            "evidence_count": 12,
+            "input_units": 21994
+          },
+          "submitted": {
+            "chunk_count": 5,
+            "fact_count": 81,
+            "evidence_count": 12,
+            "input_units": 21994
+          },
+          "mode": "structured_full",
+          "lossy": false,
+          "loss_kinds": [],
+          "coverage_gaps": [],
+          "merge_called": true,
+          "merge_completed": true,
+          "failure_reason": null
+        }
+      },
+      "summary_scope_counts": {
+        "partial_fulltext": 3
+      },
+      "summary_status_counts": {
+        "usable_partial": 3
+      },
+      "report_artifact_exists": true,
+      "report_valid": false,
+      "report_references": 3,
+      "stage_seconds": {
+        "search": 22.676641899997776,
+        "selection": 3.5534438000031514,
+        "fulltexts": 28.089272400000482,
+        "summarize": 70.89355699999578,
+        "report": 13.664811100003135,
+        "total": 138.9452960999988
+      },
+      "wall_seconds": 141.0785188000009,
+      "llm_usage": {
+        "task_agent": {
+          "logical_calls": 29,
+          "requests": 29,
+          "successful_requests": 29,
+          "failed_requests": 0,
+          "retries": 0,
+          "invalid_outputs": 0,
+          "prompt_tokens": 133657,
+          "completion_tokens": 26850,
+          "total_tokens": 160507,
+          "usage_missing_responses": 0
+        },
+        "main_agent": {
+          "logical_calls": 1,
+          "requests": 1,
+          "successful_requests": 1,
+          "failed_requests": 0,
+          "retries": 0,
+          "invalid_outputs": 0,
+          "prompt_tokens": 948,
+          "completion_tokens": 129,
+          "total_tokens": 1077,
+          "usage_missing_responses": 0
+        },
+        "total": {
+          "logical_calls": 30,
+          "requests": 30,
+          "successful_requests": 30,
+          "failed_requests": 0,
+          "retries": 0,
+          "invalid_outputs": 0,
+          "prompt_tokens": 134605,
+          "completion_tokens": 26979,
+          "total_tokens": 161584,
+          "usage_missing_responses": 0
+        }
+      },
+      "cache_hits": {
+        "download": 0,
+        "conversion": 0
+      },
+      "http_requests": {
+        "source_search": 2,
+        "download": 4,
+        "total": 6
+      },
+      "unique_error_codes": {
+        "access_unavailable": 1,
+        "invalid_model_output": 3,
+        "partial_summary": 3,
+        "partial_report": 1
+      },
+      "tool_calls": [
+        {
+          "tool": "run_research_pipeline",
+          "controller": "model_tool_call",
+          "status": "partial"
+        }
+      ],
+      "artifact_counts": {
+        "report": 1,
+        "summary": 3,
+        "chunks": 3,
+        "audit": 3,
+        "pdf": 3,
+        "markdown": 3,
+        "run": 1
+      },
+      "experiment_settings": {
+        "source_limit": 20,
+        "selector_input_token_budget": 256000,
+        "report_input_token_budget": 64000,
+        "chunk_chars": 12000,
+        "max_chunks": 12,
+        "llm_input_token_budget": 24000,
+        "llm_max_calls": 100,
+        "llm_max_total_tokens": 200000,
+        "llm_max_output_tokens": 4000,
+        "cache_enabled": false,
+        "cache_mode": "off",
+        "max_fulltext_attempts": 0
+      },
+      "source_hashes_unchanged": true,
+      "selector_input_sha256": "be7ef0599a98bf43f58762271d5c818a84b679db555a33bba72b7a4a19f14450",
+      "pdf_sha256": {
+        "arxiv:2607.04430": "a8ebca6300b5f49be1da7747d91fa20142580be4bae72d5eef9965168aaa6db2",
+        "openalex:W7224429474": "b6675c5c6c983e40298cd6fbb0df060bb2a494384913eae02c0f351114962b49",
+        "openalex:W4411934268": "f7aae419ec81c10457bc9cf696f061166a3e0f0c00ffa9a04d4e0c3c292fe465"
+      }
+    }
+  },
+  "comparison": {
+    "wall_seconds_saved": 116.69515880000108,
+    "wall_time_reduction": 0.4527039373705245,
+    "speedup": 1.8271646157940833,
+    "validated_chunks": {
+      "sequential": 16,
+      "parallel": 14
+    },
+    "release_evidence_checks": {
+      "same_ranked_selector_input": true,
+      "same_original_top_k_ids": true,
+      "same_acquired_pdf_hashes": true,
+      "same_model_configuration": true,
+      "same_analysis_budgets": true,
+      "same_backend_source_hashes": true,
+      "pdf_count_not_decreased": true,
+      "usable_notes_not_decreased": true,
+      "paper_level_synthesis_not_decreased": true,
+      "complete_notes_not_decreased": true,
+      "validated_chunks_not_decreased": false,
+      "execution_status_not_regressed": true,
+      "delivery_status_not_regressed": true,
+      "report_completeness_not_regressed": true,
+      "no_download_or_conversion_cache_hits": true,
+      "wall_time_reduction_at_least_25_percent": true,
+      "fulltext_scope_notes_not_decreased": false
+    },
+    "experiment_gate_passed": false,
+    "release_pending_required_software_checks": false,
+    "user_requested_time_condition_passed": true,
+    "publication_decision": "Proceed under the user-authorized time-reduction condition, subject to software checks. The additional quality gate did not pass; disclose the 16-to-14 validated-chunk change and the 1-to-0 fulltext-scope-note change. Do not claim equal research quality.",
+    "software_checks_passed": true,
+    "release_ready_under_user_time_condition": true
+  },
+  "software_checks": {
+    "python": {
+      "passed": 423,
+      "skipped": 3,
+      "seconds": 36.74
+    },
+    "ruff": "passed",
+    "typecheck": "passed",
+    "production_build": "passed",
+    "frontend": {
+      "passed": 17
+    },
+    "electron": {
+      "passed": 18
+    },
+    "source_desktop_e2e": {
+      "passed_groups": 18,
+      "record": "data/validation/v020/source-1793550308732/result.json"
+    },
+    "mock_desktop_e2e": {
+      "passed_groups": 10,
+      "record": "data/validation/v020/mock-1793550416978/result.json"
+    }
+  }
+}

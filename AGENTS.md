@@ -1,4 +1,4 @@
-# Paper Agent v0.3.0
+# Paper Agent v1.0.0
 
 The permanent development branch is `dev`. Continue future development on
 `dev` and open pull requests to `main`; do not create version-named development
@@ -30,7 +30,7 @@ docs/开发契约.md before implementation. Backend model fields remain frozen.
   deletion by switching tools. Never put secrets in code, logs or artifacts.
 - Keep failure/partial/fulltext boundaries honest. Performance comparisons
   require comparable real runs and imported measurements.
-- No commits, pushes or publishing during this local iteration.
+- Commits, pushes and publishing require explicit user authorization.
 
 After work, report actual changed files, checks, failures and remaining risks.
 Use npm run typecheck, npm run build, npm run test:electron and npm run test:e2e

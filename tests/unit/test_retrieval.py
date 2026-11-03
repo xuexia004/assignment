@@ -109,7 +109,7 @@ def test_ranking_is_reproducible_normalized_and_explained():
     assert retrieval_counts([]) == {"input_count": 0, "unique_count": 0, "duplicate_count": 0}
 
 
-@pytest.mark.parametrize(("k", "available"), [(3, 12), (5, 12), (8, 12), (8, 2)])
+@pytest.mark.parametrize(("k", "available"), [(3, 12), (5, 12), (8, 12), (8, 2), (3, 20), (3, 21)])
 def test_pipeline_passes_top_k_and_independent_candidate_pool_to_selector(
     tmp_path, k, available,
 ):
@@ -144,7 +144,7 @@ def test_pipeline_passes_top_k_and_independent_candidate_pool_to_selector(
 
         pipeline = ResearchPipeline(
             Settings(
-                mode="live", top_k=k, candidate_limit=10,
+                mode="live", top_k=k, candidate_limit=10, ranker="keyword",
                 output_dir=tmp_path / "runs", data_dir=tmp_path / "files",
             ),
             llm=object(), selector_fn=recording_selector,
@@ -153,19 +153,65 @@ def test_pipeline_passes_top_k_and_independent_candidate_pool_to_selector(
         searched = await pipeline.search_papers("agent memory", k, "agent memory")
         assert len(searched.papers) == available
         assert searched.metrics["full_candidate_count"] == available
-        assert searched.metrics["downstream_candidate_count"] == min(10, available)
+        assert searched.metrics["downstream_candidate_count"] == min(20, available)
+        observed["expected_ids"] = [paper.paper_id for paper in searched.papers[:20]]
         selected = await pipeline.select_top_k_papers(searched.run_id)
         return selected, observed
 
     result, observed = asyncio.run(run())
     expected_count = min(k, available)
     assert observed["k"] == k
-    assert len(observed["candidate_ids"]) == min(10, available)
+    assert observed["candidate_ids"] == observed["expected_ids"]
+    assert len(observed["candidate_ids"]) == min(20, available)
+    assert len(result.papers) == available
     assert len(result.selected_papers) == expected_count
     assert len({candidate.paper_id for candidate in result.selected_papers}) == expected_count
     assert {candidate.paper_id for candidate in result.selected_papers} <= set(
         observed["candidate_ids"]
     )
+
+
+def test_semantic_order_determines_top_twenty_and_retains_all_for_pdf_fallback(tmp_path, monkeypatch):
+    seen = {}
+
+    async def semantic(query, papers):
+        seen["semantic_input"] = [p.paper_id for p in papers]
+        return list(reversed(papers)), {"actual_ranker": "semantic", "candidate_count": len(papers)}
+
+    async def source(query, limit, *, settings=None, client=None):
+        return [Paper(paper_id=f"paper-{i}", title=f"Distinct research document {i}",
+                      abstract=f"Research content {i}") for i in range(98)]
+
+    async def empty(*args, **kwargs):
+        return []
+
+    async def selector(idea, papers, k, *, settings=None, llm=None):
+        seen["agent_input"] = [p.paper_id for p in papers]
+        return [p.model_copy(update={"rank": i + 1}) for i, p in enumerate(papers[:k])]
+
+    monkeypatch.setattr("paper_agent.services.pipeline.semantic_rerank", semantic)
+
+    async def scenario():
+        pipeline = ResearchPipeline(
+            Settings(mode="live", ranker="semantic", candidate_limit=3, merged_candidate_limit=3,
+                     output_dir=tmp_path / "runs", data_dir=tmp_path / "files"),
+            llm=object(), selector_fn=selector, search_arxiv_fn=source, search_openalex_fn=empty,
+        )
+        run = await pipeline.search_papers("research", 3, "research")
+        return await pipeline.select_top_k_papers(run.run_id)
+
+    result = asyncio.run(scenario())
+    assert len(seen["semantic_input"]) == 98
+    ranked_ids = list(reversed(seen["semantic_input"]))
+    assert seen["agent_input"] == ranked_ids[:20]
+    assert [paper.paper_id for paper in result.papers] == ranked_ids
+    assert result.metrics["downstream_candidate_count"] == 20
+    assert result.metrics["ranking"]["candidate_count_before_truncation"] == 98
+    assert result.metrics["ranking"]["candidate_count_after_truncation"] == 20
+    assert result.metrics["selection"]["selector_input_ids"] == ranked_ids[:20]
+    assert result.metrics["candidate_pool"]["excluded_by_candidate_limit"] == ranked_ids[20:]
+    assert result.metrics["target_coverage"]["selector_pool_ids"] == ranked_ids[:20]
+    assert result.metrics["candidate_pool"]["legacy_limits_applied"] is False
 
 
 class FakeLLM:

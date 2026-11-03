@@ -37,7 +37,7 @@ const initialState: WorkspaceState = {
   activeJob: null,
   resultJob: null,
   action: 'research',
-  executionMode: 'auto',
+  executionMode: 'sequential',
   topK: 5,
   drafts: {},
   sending: false,
@@ -153,9 +153,8 @@ function applyJob(job: Job): void {
   // A GET snapshot may be older than SSE events already received by this
   // renderer. Merge by seq instead of replacing the event list wholesale.
   const events = new Map(job.events.map(event => [event.seq, event]));
-  // Events already observed over SSE take precedence over an older GET snapshot.
+  // Do not let a stale polling snapshot overwrite more recent SSE events.
   for (const event of previous.events) events.set(event.seq, event);
-  // A delayed poll must not turn a finished job back into a running job.
   const staleSnapshot = isJobFinished(previous.status) && !isJobFinished(job.status);
   const merged: Job = {
     ...(staleSnapshot ? previous : job),
@@ -271,7 +270,7 @@ export const workspaceStore = {
     update({ action });
   },
   setExecutionMode(executionMode: ExecutionMode): void {
-    update({ executionMode });
+    update({ executionMode: requestedExecutionMode(executionMode) });
   },
   setTopK(topK: number): void {
     if (Number.isInteger(topK) && topK >= 1 && topK <= 15) update({ topK });
@@ -293,7 +292,7 @@ export const workspaceStore = {
     update({ notice: null });
   },
   updateConfig(config: PublicConfig): void {
-    update({ config, topK: config.default_top_k, executionMode: requestedExecutionMode(config.default_execution_mode), error: null, notice: '设置已保存。保存设置不会启动研究或模型请求。' });
+    update({ config, topK: config.default_top_k, error: null, notice: '设置已保存。保存设置不会启动研究或模型请求。' });
   },
   newConversation(): void {
     selectionSequence += 1;
@@ -360,7 +359,11 @@ export const workspaceStore = {
     submittedByJob.set(job.job_id, { text: trimmed, draftKey: acceptedDraftKey, action });
     if (submittedByJob.size > 40) submittedByJob.delete(submittedByJob.keys().next().value as string);
     if (sequence !== selectionSequence) {
-      update({ sending: false });
+      update({
+        sending: false,
+        error: null,
+        notice: `任务 ${job.job_id} 已在后台提交；切换会话不会取消它。`,
+      });
       return job;
     }
     update({

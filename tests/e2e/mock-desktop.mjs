@@ -144,6 +144,28 @@ try {
   assert.match(reportText.text, /Mock HTTP\/Fake LLM/);
   report.checks.push('cross-job-path-non-pdf-and-fake-pdf-reads-rejected');
 
+  // The composer correctly blocks submissions without a configured key. This
+  // fixture value only enables the local Mock HTTP route; no provider is called.
+  await page.evaluate(() => window.paperAgent.saveConfig({ api_key: 'mock-switch-fixture-only' }));
+  await page.reload();
+  await expect(page.getByRole('main', { name: '研究对话' })).toBeVisible();
+  await expect(page.locator('.key-needed')).toHaveCount(0);
+  for (const enabled of [true, false]) {
+    await page.getByRole('button', { name: '新建会话', exact: true }).click();
+    const parallelSwitch = page.getByRole('switch', { name: '并行优化' });
+    await parallelSwitch.setChecked(enabled);
+    await page.getByRole('textbox', { name: '研究问题', exact: true }).fill('fixture:success');
+    await page.getByRole('button', { name: '开始研究', exact: true }).click();
+    await expect.poll(async () => {
+      const snapshot = await (await fetch(`${endpoint.url}/mock/state`, {
+        headers: { Authorization: `Bearer ${endpoint.token}` },
+      })).json();
+      return snapshot.submissions.at(-1)?.execution_mode;
+    }).toBe(enabled ? 'parallel' : 'sequential');
+    await expect(page.getByRole('tab', { name: '讨论', exact: true })).toHaveAttribute('aria-selected', 'true');
+  }
+  report.checks.push('parallel-switch-on-and-off-cross-real-preload');
+
   for (const executionMode of ['auto', 'parallel', 'sequential', 'concurrent']) {
     await page.evaluate(mode => window.paperAgent.sendMessage({ text: 'fixture:success', action: 'research',
       top_k: 3, execution_mode: mode, mode: 'demo' }), executionMode);
@@ -197,7 +219,7 @@ try {
 
   if (report.ui_checks_requested) {
     await runMockUiChecks(page, jobs);
-    report.checks.push('integrated-mock-ui-status-execution-log-and-pdf-page-jump');
+    report.checks.push('integrated-mock-ui-reading-views-pdf-controls-and-task-metrics');
   }
   assert.deepEqual(rendererErrors, []);
 } catch (error) {

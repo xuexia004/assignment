@@ -1,3 +1,5 @@
+import { paperTitleCitations, type NamedPaper } from './paperCitations';
+
 const COMPARISON_LABELS: Record<string, string> = {
   paper_ids: '涉及论文', paper_id: '涉及论文', dimension: '比较维度', detail: '说明',
   method: '方法', mechanism: '机制', memory: '记忆机制', evidence: '证据',
@@ -118,7 +120,7 @@ function preserveOriginalComparison(body: string): string {
 }
 
 /** Keep new readable reports intact; convert only reliably identified legacy comparison data. */
-export function readableReportMarkdown(
+function legacyReadableReportMarkdown(
   markdown: string, comparison?: Record<string, unknown>[] | null,
 ): string {
   if (!markdown) return markdown;
@@ -145,8 +147,11 @@ export function readableReportMarkdown(
     }
     return `${markdown.slice(0, headingEnd)}\n\n${rendered}\n\n${markdown.slice(bodyEnd)}`;
   }
-  if (rows.length) {
-    return `${markdown.trimEnd()}\n\n## 论文比较\n\n${readableComparisonMarkdown(rows)}\n`;
-  }
   return markdown;
+}
+
+export function readableReportMarkdown(
+  markdown: string, comparison?: Record<string, unknown>[] | null, papers: NamedPaper[] = [],
+): string {
+  return paperTitleCitations(legacyReadableReportMarkdown(markdown, comparison), papers);
 }

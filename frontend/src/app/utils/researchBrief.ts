@@ -63,8 +63,7 @@ export function requestedExecutionMode(
   value: PublicConfig['default_execution_mode'] | ExecutionMode | null | undefined,
 ): ExecutionMode {
   if (value === 'parallel' || value === 'concurrent') return 'parallel';
-  if (value === 'sequential') return 'sequential';
-  return 'auto';
+  return 'sequential';
 }
 
 export function deliveryStatusFor(
@@ -76,8 +75,17 @@ export function deliveryStatusFor(
 
 /** Only render supported findings and never fill the three-card target with placeholders. */
 export function supportedFindings(brief: ResearchBrief | null | undefined) {
+  const seen = new Set<string>();
   return (brief?.findings ?? [])
     .filter(finding => finding.statement.trim().length > 0 && finding.evidence.length > 0)
+    .filter(finding => {
+      const key = finding.statement.normalize('NFKC')
+        .replace(/[（(][^（）()]*\b[fe]\d+\b[^（）()]*[）)]/g, '')
+        .replace(/^作者(?:报告|指出|称)/, '').replace(/\s+/g, '').replace(/[。.!！;；]+$/, '').toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .slice(0, 3);
 }
 
