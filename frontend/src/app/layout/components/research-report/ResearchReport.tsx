@@ -7,6 +7,7 @@ import { errorLabel } from '../../../utils/labels';
 import { readableReportMarkdown } from '../../../utils/reportMarkdown';
 import { reportArtifactFor } from '../../../utils/researchBrief';
 import { paperTitleCitations } from '../../../utils/paperCitations';
+import { visibleReportDocument, type LoadedReportDocument } from '../../../utils/resultPresentation';
 import { MarkdownContent } from '../common/MarkdownContent';
 
 export function ResearchReport() {
@@ -16,11 +17,12 @@ export function ResearchReport() {
   const result = job?.result ?? conversation?.result ?? null;
   const artifacts = job?.artifacts ?? [];
   const reportArtifact = reportArtifactFor(result, artifacts);
-  const [markdown, setMarkdown] = useState(report?.markdown ?? '');
-  const [truncated, setTruncated] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [exportedPath, setExportedPath] = useState<string | null>(null);
+  const reportKey = job && reportArtifact ? `${job.job_id}:${reportArtifact.artifact_id}` : null;
+  const [artifactDocument, setArtifactDocument] = useState<LoadedReportDocument | null>(null);
+  const [exported, setExported] = useState<{ key: string; path: string } | null>(null);
+  const inlineMarkdown = report?.markdown?.trim() ? report.markdown : '';
+  const { markdown, truncated, loading, error } = visibleReportDocument(inlineMarkdown, reportKey, artifactDocument);
+  const exportedPath = reportKey && exported?.key === reportKey ? exported.path : null;
   const contentRef = useRef<HTMLDivElement | null>(null);
   const displayMarkdown = useMemo(
     () => readableReportMarkdown(markdown, report?.comparison, [
@@ -31,31 +33,17 @@ export function ResearchReport() {
   const hasSubstance = reportHasSubstance(report, displayMarkdown);
 
   useEffect(() => {
+    if (!job || !reportArtifact || !reportKey || inlineMarkdown) return;
     let current = true;
-    setError(null);
-    if (report?.markdown) {
-      setMarkdown(report.markdown);
-      setLoading(false);
-      return () => { current = false; };
-    }
-    if (!job || !reportArtifact) {
-      setMarkdown('');
-      setLoading(false);
-      return () => { current = false; };
-    }
-    setLoading(true);
+    setArtifactDocument({ key: reportKey, text: '', truncated: false, error: null, loading: true });
     void Promise.resolve().then(() => desktopApi().readArtifact(job.job_id, reportArtifact.artifact_id)).then(value => {
-      if (current) {
-        setMarkdown(value.text);
-        setTruncated(value.truncated);
-      }
+      if (current) setArtifactDocument({ key: reportKey, text: value.text, truncated: value.truncated, error: null, loading: false });
     }).catch(reason => {
-      if (current) setError(reason instanceof Error ? reason.message : String(reason));
-    }).finally(() => {
-      if (current) setLoading(false);
+      if (current) setArtifactDocument({ key: reportKey, text: '', truncated: false,
+        error: reason instanceof Error ? reason.message : String(reason), loading: false });
     });
     return () => { current = false; };
-  }, [job?.job_id, report?.markdown, reportArtifact?.artifact_id]);
+  }, [reportKey, inlineMarkdown]);
 
   const copyReport = async () => {
     if (!displayMarkdown) return;
@@ -70,7 +58,7 @@ export function ResearchReport() {
     if (!job || !reportArtifact) return;
     try {
       const response = await desktopApi().exportArtifact(job.job_id, reportArtifact.artifact_id);
-      setExportedPath(response.cancelled ? null : response.path ?? null);
+      if (reportKey) setExported(response.cancelled || !response.path ? null : { key: reportKey, path: response.path });
       workspaceStore.setNotice(response.cancelled ? '已取消导出。' : response.path ? `报告已导出到：${response.path}` : '报告导出完成。');
     } catch (reason) {
       workspaceStore.setError(reason instanceof Error ? reason.message : String(reason));

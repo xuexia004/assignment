@@ -977,3 +977,6 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .execution-paper-list li:first-child { padding-top: 0; border-top: 0; }
 .execution-paper-list span { color: var(--ink-soft); font-size: 9.5px; line-height: 1.45; }
 .execution-paper-list small { color: var(--ink-faint); font-size: 8.5px; line-height: 1.4; overflow-wrap: anywhere; }
+
+.pdf-canvas.has-error { display: none; }
+.pdf-render-error { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--warning-ink); background: var(--surface-soft); font-size: 10px; }

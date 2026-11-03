@@ -17,8 +17,9 @@ export function PaperReader({ tab }: { tab: LayoutTab }) {
   const currentJob = resultJob ?? activeJob;
   const [remoteJob, setRemoteJob] = useState<Job | null>(null);
   const [remoteLoading, setRemoteLoading] = useState(false);
-  const [remoteError, setRemoteError] = useState<string | null>(null);
-  const job = tab.jobId && tab.jobId !== currentJob?.job_id ? remoteJob : currentJob;
+  const [remoteError, setRemoteError] = useState<{ jobId: string; message: string } | null>(null);
+  const remoteTargetId = tab.jobId && tab.jobId !== currentJob?.job_id ? tab.jobId : null;
+  const job = remoteTargetId ? (remoteJob?.job_id === remoteTargetId ? remoteJob : null) : currentJob;
 
   useEffect(() => {
     if (!tab.jobId || tab.jobId === currentJob?.job_id) {
@@ -33,7 +34,7 @@ export function PaperReader({ tab }: { tab: LayoutTab }) {
     void Promise.resolve().then(() => desktopApi().job(tab.jobId!)).then(value => {
       if (!cancelled) setRemoteJob(value);
     }).catch(error => {
-      if (!cancelled) setRemoteError(error instanceof Error ? error.message : String(error));
+      if (!cancelled) setRemoteError({ jobId: tab.jobId!, message: error instanceof Error ? error.message : String(error) });
     }).finally(() => {
       if (!cancelled) setRemoteLoading(false);
     });
@@ -88,7 +89,7 @@ export function PaperReader({ tab }: { tab: LayoutTab }) {
       <span className="skeleton-line wide"/><span className="skeleton-line"/><span className="skeleton-line medium"/>
     </div>;
   }
-  if (remoteError) return <div className="panel-empty"><span><FileText size={20}/></span><strong>所属任务暂时不可读取</strong><p>{remoteError}</p></div>;
+  if (remoteError?.jobId === remoteTargetId) return <div className="panel-empty"><span><FileText size={20}/></span><strong>所属任务暂时不可读取</strong><p>{remoteError.message}</p></div>;
   if (!paper) return <div className="panel-empty"><span><FileText size={20}/></span><strong>该论文不在所属任务结果中</strong><p>论文标签会保留最近打开的任务上下文；可在标签栏关闭后从当前结果重新打开。</p></div>;
 
   const citationPapers = [...collection.paperById.values(), ...(job?.result?.report?.references ?? [])];
