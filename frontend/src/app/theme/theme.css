@@ -493,9 +493,12 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .save-settings { width: 100%; margin-top: 2px; }
 .settings-service .settings-section-head { align-items: center; }
 .service-facts { display: grid; gap: 7px; margin: 0; }
-.service-facts div { display: flex; justify-content: space-between; gap: 8px; }
+.service-facts > div { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
 .service-facts dt { color: var(--ink-faint); font-size: 9px; }
-.service-facts dd { max-width: 72%; margin: 0; text-align: right; }
+.service-facts dd { min-width: 0; max-width: 100%; margin: 0; text-align: right; }
+.service-path summary { display: block; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.service-path summary:focus-visible { outline: 2px solid var(--ink-muted); outline-offset: -2px; }
+.service-path-full { margin-top: 6px; padding: 6px; white-space: normal; overflow-wrap: anywhere; text-align: left; user-select: text; background: var(--dock); }
 .validity-note { display: flex; align-items: flex-start; gap: 8px; margin: 15px 14px 11px; padding: 10px; border: 1px solid var(--warning-line); border-radius: 7px; color: var(--warning-ink); background: var(--warning-wash); }
 .validity-note > span { flex: 0 0 auto; margin-top: 1px; }
 .validity-note p { margin: 0; font-size: 10px; line-height: 1.55; }
@@ -977,3 +980,20 @@ input::placeholder, textarea::placeholder { color: var(--ink-faint); }
 .execution-paper-list li:first-child { padding-top: 0; border-top: 0; }
 .execution-paper-list span { color: var(--ink-soft); font-size: 9.5px; line-height: 1.45; }
 .execution-paper-list small { color: var(--ink-faint); font-size: 8.5px; line-height: 1.4; overflow-wrap: anywhere; }
+
+/* Independent research controls keep baseline descriptions beside each switch. */
+.research-methods { margin: 0; padding: 0; min-width: 0; border: 0; }
+.research-method-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 0; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
+.research-method-row > span { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.research-method-row strong { font-size: 11px; font-weight: 550; color: var(--ink); }
+.research-method-row small { font-size: 10px; line-height: 1.6; color: var(--ink-muted); }
+.research-switch { appearance: none; flex: 0 0 32px; width: 32px; height: 18px; margin: 0; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-sunken); cursor: pointer; position: relative; }
+.research-switch::after { content: ''; position: absolute; width: 12px; height: 12px; top: 2px; left: 2px; border-radius: 50%; background: var(--ink-muted); }
+.research-switch:checked { background: var(--accent-dark); border-color: var(--accent-dark); }
+.research-switch:checked::after { left: 16px; background: white; }
+.research-switch:focus-visible { outline: 2px solid var(--accent-dark); outline-offset: 3px; }
+.research-switch:disabled { opacity: .5; cursor: default; }
+.research-analysis-choice { padding: 12px 0 0; }
+.research-method-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.research-method-row .research-stage { font-size: 9px; color: var(--ink-faint); letter-spacing: .04em; }

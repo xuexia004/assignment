@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,14 +12,14 @@ import pymupdf
 import pytest
 
 from paper_agent.config import Settings
-from paper_agent.models import Paper
+from paper_agent.models import PageMapping, Paper
 from paper_agent.services.downloader import Downloader, download_pdf
 
 
-def pdf_bytes():
+def pdf_bytes(text="Mock test fixture: a readable PDF, not a research paper."):
     with pymupdf.open() as document:
         page = document.new_page()
-        page.insert_text((72, 72), "Mock test fixture: a readable PDF, not a research paper.")
+        page.insert_text((72, 72), text)
         return document.tobytes()
 
 
@@ -195,6 +196,26 @@ def test_total_timeout_covers_all_attempts(tmp_path):
     result = run_download(tmp_path, handler, download_timeout=0.05)
     assert result.status == "download_failed"
     assert result.errors[-1].code == "download_timeout"
+
+
+@pytest.mark.parametrize("total_budget,success", [(1.0, True), (0.05, False)])
+def test_source_queue_does_not_consume_candidate_budget_but_total_still_applies(tmp_path, monkeypatch, total_budget, success):
+    @asynccontextmanager
+    async def delayed_gate(host, interval):
+        await asyncio.sleep(0.12)
+        yield
+
+    monkeypatch.setattr("paper_agent.services.downloader._source_gate", delayed_gate)
+    payload = pdf_bytes()
+    result = run_download(tmp_path, lambda request: httpx.Response(200, content=payload),
+                          download_timeout=total_budget, download_candidate_timeout=0.04)
+    if success:
+        assert result.status == "downloaded"
+        assert result.metadata["downloads"]["queue_seconds"] >= 0.1
+        assert result.metadata["downloads"]["received_bytes"] == len(payload)
+    else:
+        assert result.errors[-1].code == "download_timeout"
+        assert result.metadata["downloads"]["request_count"] == 0
     assert not list(tmp_path.rglob("*.tmp"))
 
 
@@ -304,6 +325,188 @@ def test_cache_is_hashed_and_readability_verified(tmp_path):
     manifest.write_text(json.dumps(content), encoding="utf-8")
     fourth = run_download(tmp_path, handler)
     assert count == 3 and fourth.status == "downloaded"
+
+
+@pytest.mark.parametrize("infer_from_url", [False, True])
+def test_arxiv_revisions_have_separate_verified_caches(tmp_path, monkeypatch, infer_from_url):
+    @asynccontextmanager
+    async def no_delay(host, interval):
+        yield
+
+    # Only replace rate-limit sleeps. Mock DNS and the normal safe fetch remain active.
+    monkeypatch.setattr("paper_agent.services.downloader._source_gate", no_delay)
+    payloads = {"v1": pdf_bytes("Version one fixture."), "v2": pdf_bytes("Version two fixture.")}
+    requests = []
+
+    def document(version):
+        host = "arxiv.org" if infer_from_url else "papers.example"
+        return Paper(paper_id="arxiv:2601.01234", title="Revision fixture", arxiv_id="2601.01234",
+                     arxiv_version=None if infer_from_url else version,
+                     pdf_url=f"https://{host}/pdf/2601.01234{version}")
+
+    def handler(request):
+        requests.append(request.url.path)
+        return httpx.Response(200, content=payloads[request.url.path[-2:]])
+
+    first = run_download(tmp_path, handler, document("v1"))
+    second = run_download(tmp_path, handler, document("v2"))
+    reread = run_download(tmp_path, handler, document("v1"))
+    assert len(requests) == 2
+    assert first.pdf_path != second.pdf_path
+    assert first.metadata["downloads"]["sha256"] != second.metadata["downloads"]["sha256"]
+    assert Path(first.pdf_path).read_bytes() == payloads["v1"]
+    assert Path(second.pdf_path).read_bytes() == payloads["v2"]
+    assert reread.pdf_path == first.pdf_path and reread.metadata["downloads"]["cache_hit"]
+    manifest_path = Path(first.pdf_path).with_suffix(".json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["arxiv_id"] == "2601.01234" and manifest["arxiv_version"] == "v1"
+    manifest["arxiv_version"] = "v2"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    repaired = run_download(tmp_path, handler, document("v1"))
+    assert len(requests) == 3 and not repaired.metadata["downloads"]["cache_hit"]
+    assert Path(second.pdf_path).read_bytes() == payloads["v2"]
+
+
+def test_legacy_cache_remains_unversioned_and_cannot_satisfy_explicit_revision(tmp_path):
+    document = Paper(paper_id="arxiv:2601.01234", title="Legacy fixture", arxiv_id="2601.01234",
+                     pdf_url="https://papers.example/latest.pdf")
+    legacy = pdf_bytes("Legacy cached fixture.")
+    current = pdf_bytes("Version two fixture.")
+    key = hashlib.sha256(document.paper_id.encode()).hexdigest()
+    path = tmp_path / "pdfs" / f"{key}.pdf"
+    path.parent.mkdir()
+    path.write_bytes(legacy)
+    path.with_suffix(".json").write_text(json.dumps({
+        "schema": 1, "paper_id": document.paper_id, "candidate": document.pdf_url,
+        "sha256": hashlib.sha256(legacy).hexdigest(), "bytes": len(legacy), "pages": 1,
+    }), encoding="utf-8")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, content=current)
+
+    old = run_download(tmp_path, handler, document)
+    new = run_download(tmp_path, handler, document.model_copy(update={"arxiv_version": "v2"}))
+    reread = run_download(tmp_path, handler, document)
+    assert len(requests) == 1
+    assert old.metadata["downloads"]["cache_hit"] and reread.metadata["downloads"]["cache_hit"]
+    assert not new.metadata["downloads"]["cache_hit"] and new.pdf_path != str(path)
+    assert path.read_bytes() == legacy and Path(new.pdf_path).read_bytes() == current
+
+
+@pytest.mark.parametrize("new_status", [200, 404])
+@pytest.mark.parametrize("keyword_source", ["pdf_keyword_section", "author_metadata"])
+def test_revision_change_detaches_inherited_fulltext_without_deleting_files(tmp_path, new_status, keyword_source):
+    original = Paper(paper_id="arxiv:2601.01234", title="Revision fixture", arxiv_id="2601.01234",
+                     arxiv_version="v1", pdf_url="https://papers.example/v1.pdf")
+    previous_bytes = pdf_bytes("Version one fixture.")
+    previous = run_download(tmp_path, lambda request: httpx.Response(200, content=previous_bytes), original)
+    markdown = tmp_path / "old.md"
+    markdown.write_text("Version one extracted text.", encoding="utf-8")
+    previous.markdown_path = str(markdown)
+    previous.markdown_artifact_id = "old-markdown"
+    previous.page_map = [PageMapping(page_number=1, text="Version one extracted text.")]
+    previous.fulltext_quality = {"complete": True}
+    previous.conversion_status = "converted"
+    previous.metadata["conversion"] = {"parser": "old-parser"}
+    previous.metadata["research_audit"] = {"source_scope": "fulltext"}
+    previous.metadata["author_keywords"] = ["Previous keyword"]
+    previous.metadata["author_keywords_provenance"] = {"source": keyword_source}
+    requested = previous.model_copy(deep=True, update={
+        "arxiv_version": "v2", "pdf_url": "https://papers.example/v2.pdf",
+    })
+    result = run_download(tmp_path, lambda request: httpx.Response(new_status, content=pdf_bytes()), requested)
+    assert result.markdown_path is None and result.markdown_artifact_id is None
+    assert result.page_map == [] and result.fulltext_quality == {}
+    assert result.conversion_status == "not_attempted" and result.reading_status == "metadata_only"
+    assert "conversion" not in result.metadata and "research_audit" not in result.metadata
+    assert result.metadata["downloads"]["previous_revision_detached"]["arxiv_version"] == "v1"
+    if keyword_source == "pdf_keyword_section":
+        assert "author_keywords" not in result.metadata and "author_keywords_provenance" not in result.metadata
+    else:
+        assert result.metadata["author_keywords"] == ["Previous keyword"]
+    if new_status == 404:
+        assert result.pdf_path is None and result.pdf_artifact_id is None
+    else:
+        assert result.pdf_path != previous.pdf_path
+    assert requested.pdf_path == previous.pdf_path and requested.markdown_path == str(markdown)
+    assert requested.metadata["author_keywords"] == ["Previous keyword"]
+    assert Path(previous.pdf_path).read_bytes() == previous_bytes
+    assert markdown.read_text(encoding="utf-8") == "Version one extracted text."
+
+
+@pytest.mark.parametrize("first_suffix", ["", "v1"])
+def test_explicit_revision_pins_latest_url_and_rejects_wrong_version(tmp_path, monkeypatch, first_suffix):
+    @asynccontextmanager
+    async def no_delay(host, interval):
+        yield
+
+    monkeypatch.setattr("paper_agent.services.downloader._source_gate", no_delay)
+    requests = []
+
+    def handler(request):
+        requests.append(request.url.path)
+        return httpx.Response(200, content=pdf_bytes())
+
+    document = Paper(paper_id="arxiv:2601.01234", title="Revision fixture",
+                     arxiv_id="2601.01234", arxiv_version="v2",
+                     pdf_url=f"https://arxiv.org/pdf/2601.01234{first_suffix}",
+                     pdf_urls=["https://arxiv.org/pdf/2601.01234v2"])
+    result = run_download(tmp_path, handler, document)
+    assert result.status == "downloaded"
+    assert requests == ["/pdf/2601.01234v2"]
+    assert result.metadata["downloads"]["cache_identity"]["arxiv_version"] == "v2"
+    assert bool(result.errors) is bool(first_suffix)
+    if first_suffix:
+        assert result.errors[0].code == "arxiv_version_mismatch"
+
+
+def test_ambiguous_arxiv_revision_candidates_do_not_create_or_reuse_cache(tmp_path, monkeypatch):
+    @asynccontextmanager
+    async def no_delay(host, interval):
+        yield
+
+    monkeypatch.setattr("paper_agent.services.downloader._source_gate", no_delay)
+    requests = []
+
+    def handler(request):
+        requests.append(request.url.path)
+        return httpx.Response(200, content=pdf_bytes())
+
+    document = Paper(paper_id="arxiv:2601.01234", title="Ambiguous fixture", arxiv_id="2601.01234",
+                     pdf_urls=["https://arxiv.org/pdf/2601.01234v1", "https://arxiv.org/pdf/2601.01234v2"])
+    first = run_download(tmp_path, handler, document)
+    second = run_download(tmp_path, handler, document)
+    assert len(requests) == 2
+    assert first.metadata["downloads"]["ambiguous_arxiv_version"]
+    assert not second.metadata["downloads"]["cache_hit"]
+    assert not list((tmp_path / "pdfs").glob("*.json"))
+
+
+@pytest.mark.parametrize("redirect_path", ["/pdf/2601.01234v1", "/pdf/2601.99999v2"])
+def test_redirect_cannot_cache_a_different_official_arxiv_revision(tmp_path, monkeypatch, redirect_path):
+    @asynccontextmanager
+    async def no_delay(host, interval):
+        yield
+
+    monkeypatch.setattr("paper_agent.services.downloader._source_gate", no_delay)
+    requests = []
+
+    def handler(request):
+        requests.append(request.url.path)
+        if len(requests) == 1:
+            return httpx.Response(302, headers={"Location": "https://arxiv.org" + redirect_path})
+        pytest.fail("A mismatched revision must be rejected before sending the redirected request")
+
+    document = Paper(paper_id="arxiv:2601.01234", title="Redirect fixture", arxiv_id="2601.01234",
+                     arxiv_version="v2", pdf_url="https://arxiv.org/pdf/2601.01234v2")
+    result = run_download(tmp_path, handler, document)
+    assert result.status == "download_failed" and result.pdf_path is None
+    assert requests == ["/pdf/2601.01234v2"]
+    assert result.errors[-1].code == "arxiv_version_mismatch"
+    assert result.metadata["downloads"]["redirects"] == 1
+    assert not list((tmp_path / "pdfs").glob("*"))
 
 
 @pytest.mark.parametrize("mode", ["off", "read_only"])

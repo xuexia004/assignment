@@ -8,7 +8,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from paper_agent.config import Settings
+from paper_agent.config import RESEARCH_PROFILES, Settings
 from paper_agent.evaluation.metrics import evaluate_result
 from paper_agent.models import PipelineResult
 
@@ -19,6 +19,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="MCP v2 multi-source paper research; no local GPU required")
     parser.add_argument("idea", nargs="?", default=DEFAULT_IDEA)
     parser.add_argument("--mode", choices=["demo", "live"])
+    parser.add_argument("--profile", choices=tuple(RESEARCH_PROFILES), help="Frozen comparison methods; current preserves startup settings")
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument("--query", default="", help="Optional concise English search query")
     execution = parser.add_mutually_exclusive_group()
@@ -30,6 +31,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         settings = Settings.from_env()
         overrides = {name: getattr(args, name) for name in ("mode", "output_dir") if getattr(args, name) is not None}
+        if args.profile:
+            overrides["research_profile"] = args.profile
         if args.execution_mode:
             overrides["processing"] = "serial" if args.execution_mode == "sequential" else "concurrent"
         elif args.processing:

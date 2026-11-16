@@ -123,6 +123,33 @@ try {
 
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await expect(page.getByRole('heading', { name: '设置', exact: true })).toBeVisible();
+  // Real service path: responsive ellipsis, native tooltip and keyboard expansion.
+  const directory = page.locator('.service-path summary');
+  await expect(directory).toHaveText(info.data_root);
+  await expect(directory).toHaveAttribute('title', info.data_root);
+  const dockSizer = page.getByRole('separator', { name: '调整资料 Dock 宽度' });
+  await dockSizer.focus();
+  for (let i = 0; i < 8; i++) await page.keyboard.press('ArrowRight');
+  await directory.scrollIntoViewIfNeeded();
+  const narrowPathWidth = await directory.evaluate(element => element.clientWidth);
+  assert.ok(await directory.evaluate(element => element.scrollWidth > element.clientWidth));
+  assert.ok(await page.locator('.service-facts').evaluate(element => element.scrollWidth <= element.clientWidth + 1));
+  await directory.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.service-path details')).toHaveAttribute('open', '');
+  await expect(page.locator('.service-path-full')).toHaveText(info.data_root);
+  assert.ok(await page.locator('.service-path-full').evaluate(element => element.scrollWidth <= element.clientWidth + 1));
+  await page.locator('.settings-service').screenshot({ path: path.join(output, 'settings-path-narrow.png') });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1.25));
+  assert.ok(await page.locator('.service-facts').evaluate(element => element.scrollWidth <= element.clientWidth + 1));
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
+  await directory.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.service-path details')).not.toHaveAttribute('open');
+  await dockSizer.focus();
+  for (let i = 0; i < 8; i++) await page.keyboard.press('ArrowLeft');
+  await expect.poll(() => directory.evaluate(element => element.clientWidth)).toBeGreaterThan(narrowPathWidth);
+  report.checks.push('settings-path-responsive-ellipsis-tooltip-keyboard-full-path-and-zoom');
   await page.getByLabel('模型名称', { exact: true }).fill('e2e-local-persisted');
   await page.getByRole('button', { name: '保存 DeepSeek 设置' }).click();
   await expect.poll(() => page.evaluate(async () => (await window.paperAgent.config()).model)).toBe('e2e-local-persisted');
@@ -131,6 +158,9 @@ try {
   assert.equal('openalex_api_key' in publicConfig, false);
   assert.equal(publicConfig.api_key_configured, true);
   assert.equal(publicConfig.openalex_api_key_configured, true);
+  // A fresh isolated profile uses the verified structured report default.
+  assert.equal(publicConfig.report_strategy, 'structured');
+  await expect(page.getByRole('combobox', { name: '综合报告方法', exact: true })).toHaveValue('structured');
   const secretInputs = page.getByPlaceholder('输入新密钥');
   for (let i = 0; i < await secretInputs.count(); i++) assert.equal(await secretInputs.nth(i).inputValue(), '');
   await page.reload();
@@ -138,6 +168,89 @@ try {
   await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('e2e-local-persisted');
   assert.equal((await page.evaluate(() => Object.keys(localStorage))).every(key => /layout/.test(key)), true);
   report.checks.push('settings-persist-reload-keys-write-only-layout-only-storage');
+
+  // Profile changes use the existing allowlisted backend config boundary.
+  // Legacy presets remain readable; the visible controls independently compose methods.
+  await page.getByLabel('模型名称', { exact: true }).fill('unsaved-model-draft');
+  const methodSwitch = name => page.getByRole('switch', { name, exact: true });
+  const saveMethods = page.getByRole('button', { name: '保存研究方法', exact: true });
+  for (const profile of ['baseline', 'sources', 'ranking', 'layout', 'evidence', 'evidence_fast', 'grounded', 'enhanced']) {
+    const loaded = await page.evaluate(async profile => window.paperAgent.saveConfig({research_profile: profile}), profile);
+    assert.equal(loaded.research_profile, profile);
+  }
+  await page.reload();
+  await expect(methodSwitch('新增 Crossref 数据源')).toBeChecked();
+  await expect(methodSwitch('联合重排')).toBeChecked();
+  await expect(methodSwitch('PDF 版面解析')).toBeChecked();
+  await page.getByLabel('模型名称', { exact: true }).fill('unsaved-model-draft');
+  await methodSwitch('新增 Crossref 数据源').uncheck();
+  await methodSwitch('单篇分析增强').check();
+  await page.getByRole('combobox', { name: '分析方法', exact: true }).selectOption('grounded');
+  await page.getByRole('combobox', { name: '综合报告方法', exact: true }).selectOption('structured');
+  await saveMethods.click();
+  await expect.poll(() => page.evaluate(async () => (await window.paperAgent.config()).research_profile)).toBe('custom');
+  const customized = await page.evaluate(() => window.paperAgent.config());
+  assert.equal(customized.crossref_enabled, false);
+  assert.equal(customized.cross_encoder_enabled, true);
+  assert.equal(customized.pdf_parser, 'layout');
+  assert.equal(customized.paper_analysis_strategy, 'grounded');
+  assert.equal(customized.report_strategy, 'structured');
+  await expect(page.getByLabel('模型名称', { exact: true })).toHaveValue('unsaved-model-draft');
+  await page.screenshot({path: path.join(output, 'research-method-switches.png')});
+  await page.reload();
+  await expect(methodSwitch('新增 Crossref 数据源')).not.toBeChecked();
+  await expect(methodSwitch('联合重排')).toBeChecked();
+  await expect(page.getByRole('combobox', {name: '分析方法', exact: true})).toHaveValue('grounded');
+  await expect(page.getByRole('combobox', {name: '综合报告方法', exact: true})).toHaveValue('structured');
+  await page.getByRole('button', {name: '全部恢复基线', exact: true}).click();
+  await saveMethods.click();
+  await expect.poll(() => page.evaluate(async () => (await window.paperAgent.config()).paper_analysis_strategy)).toBe('direct');
+  await expect(methodSwitch('联合重排')).not.toBeChecked();
+  await expect(page.getByRole('combobox', {name: '综合报告方法', exact: true})).toHaveValue('legacy');
+  assert.equal((await page.evaluate(() => window.paperAgent.config())).report_strategy, 'legacy');
+  // Keep acquisition methods at baseline, then exercise the default report route
+  // in the complete desktop/MCP fixture after verifying legacy restoration.
+  await page.evaluate(() => window.paperAgent.saveConfig({research_profile: 'baseline', report_strategy: 'structured'}));
+  await page.reload();
+  assert.equal((await page.evaluate(() => window.paperAgent.info())).pid, info.pid);
+  report.checks.push('independent-method-switches-compose-persist-and-preserve-drafts-and-legacy-profiles');
+
+  const budgetSection = page.getByRole('region', {name: '下载与全文处理'});
+  const budgetPreset = budgetSection.getByLabel('时间预算方案');
+  await expect(page.getByLabel('失败替补方案')).toHaveCount(0);
+  await budgetPreset.selectOption('slow');
+  await expect(budgetSection.getByLabel('单个 PDF 地址限时（秒）')).toHaveValue('90');
+  await expect(budgetSection.getByLabel('单篇下载总限时（秒）')).toHaveValue('240');
+  await expect(budgetSection.getByLabel('整个全文阶段限时（秒）')).toHaveValue('600');
+  await budgetSection.getByRole('button', {name: '保存时间预算', exact: true}).click();
+  await expect.poll(() => page.evaluate(async () => (await window.paperAgent.config()).fulltext_timeout)).toBe(600);
+  await page.reload();
+  await expect(budgetSection.getByLabel('整个全文阶段限时（秒）')).toHaveValue('600');
+  await expect(budgetPreset).toHaveValue('slow');
+  await budgetPreset.selectOption('custom');
+  await budgetSection.getByLabel('单个 PDF 地址限时（秒）').fill('120');
+  await budgetSection.getByLabel('单篇下载总限时（秒）').fill('300');
+  await budgetSection.getByLabel('整个全文阶段限时（秒）').fill('900');
+  assert.equal((await page.evaluate(() => window.paperAgent.config())).fulltext_timeout, 600);
+  await budgetSection.getByRole('button', {name: '保存时间预算', exact: true}).click();
+  await expect.poll(() => page.evaluate(async () => (await window.paperAgent.config()).fulltext_timeout)).toBe(900);
+  await page.reload();
+  await expect(budgetPreset).toHaveValue('custom');
+  await expect(budgetSection.getByLabel('单个 PDF 地址限时（秒）')).toHaveValue('120');
+  await expect(budgetSection.getByLabel('单篇下载总限时（秒）')).toHaveValue('300');
+  await expect(budgetSection.getByLabel('整个全文阶段限时（秒）')).toHaveValue('900');
+  await budgetSection.scrollIntoViewIfNeeded();
+  await page.screenshot({path: path.join(output, 'timeout-custom.png')});
+  await budgetPreset.selectOption('default');
+  await budgetSection.getByLabel('单个 PDF 地址限时（秒）').fill('75');
+  await expect(budgetPreset).toHaveValue('custom');
+  await budgetPreset.selectOption('default');
+  await budgetSection.getByRole('button', {name: '保存时间预算', exact: true}).click();
+  await expect.poll(() => page.evaluate(async () => (await window.paperAgent.config()).fulltext_timeout)).toBe(180);
+  const budgetDefaults = await page.evaluate(() => window.paperAgent.config());
+  assert.equal(budgetDefaults.download_candidate_timeout, 45);
+  assert.equal(budgetDefaults.download_timeout, 180);
+  report.checks.push('timeout-presets-custom-edit-save-reload-and-restore-defaults');
 
   // Appearance is independent of backend/model configuration and persists locally.
   const themeGroup = page.getByRole('radiogroup', { name: '界面主题', exact: true });
@@ -168,7 +281,7 @@ try {
   await baseUrlInput.fill('https://example.org/v1');
   await page.locator('.right-dock [aria-label="收起资料 Dock"]').click();
   await expect(page.locator('.workspace-no-dock')).toBeVisible();
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.locator('.conversation-header [aria-label="打开资料 Dock"]').click();
   await expect(page.locator('.workspace-no-dock')).toHaveCount(0);
   await expect(baseUrlInput).toHaveValue('https://example.org/v1');
@@ -264,6 +377,7 @@ try {
   await expect.poll(async () => (await page.evaluate(id => window.paperAgent.job(id), job.job_id)).status,
     { timeout: 120_000, intervals: [250, 500, 1000] }).toMatch(/^(completed|partial)$/);
   const finished = await page.evaluate(id => window.paperAgent.job(id), job.job_id);
+  assert.equal(finished.result.metrics.experiment.profile, 'baseline');
   assert.ok(finished.result?.report);
   assert.ok(finished.artifacts.length > 0);
   assert.equal(finished.conversation_id, job.conversation_id);
@@ -289,6 +403,11 @@ try {
   await executionLog.locator(':scope > summary').click();
   await expect(page.locator('details.activity-card').first()).toBeVisible();
   report.checks.push('execution-log-default-collapsed-expandable-detail-cards');
+  const sources = page.getByRole('region', { name: '数据来源', exact: true });
+  await expect(sources).toContainText('arXiv');
+  await expect(sources).toContainText('OpenAlex');
+  await expect(sources).toContainText('独有候选');
+  report.checks.push('source-coverage-counts-and-health-visible-in-execution-log');
 
   await page.getByRole('tab', { name: /^论文。/ }).click();
   await expect(page.locator('.paper-row').first()).toBeVisible({ timeout: 15_000 });
@@ -333,6 +452,7 @@ try {
   assert.ok(renderedReport.includes('synthetic fixtures only'));
   assert.ok(!renderedReport.includes('"paper_ids"'), 'rendered comparison must not leak raw JSON');
   assert.equal(finished.result?.metrics?.report_valid, true);
+  assert.equal(finished.result?.metrics?.report_generation?.strategy, 'structured');
   await page.getByRole('tab', { name: /^论文。/ }).click();
   const finalRows = page.locator('.paper-section[aria-labelledby="effective-papers-title"] .paper-row');
   await expect(finalRows).toHaveCount(1);

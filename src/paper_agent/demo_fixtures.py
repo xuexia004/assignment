@@ -112,7 +112,10 @@ class DemoLLM:
             return {
                 "overview": "DEMO ONLY: synthetic papers and injected model responses.",
                 "related_work": ["Fixture workflow integration; not a literature review."],
-                "comparison": [{"paper_ids": ids, "scope": "synthetic fixtures only"}],
+                "comparison": [{"paper_ids": ids, "scope": "synthetic fixtures only",
+                                "method": "Synthetic workflow integration only.",
+                                "evidence": "Labeled offline fixture; no empirical evidence.",
+                                "limitations": "Does not establish real model quality or speed."}],
                 "researched_questions": ["Are interfaces and page evidence preserved?"],
                 "limitations": ["No real model, empirical results or performance claim."],
                 "research_directions": ["Configure a real model and independently verify evidence."],

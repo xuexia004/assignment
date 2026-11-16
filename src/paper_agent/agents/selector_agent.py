@@ -32,6 +32,11 @@ reward downloadability or discard a more relevant paper just because its PDF is 
 When a candidate includes a ranking object, keyword_rank, semantic_rank and rrf_rank are
 one-based ordering evidence. rrf_score and cosine_similarity are ranking signals, never
 probabilities; use them only as context and still judge topical/method relevance yourself.
+cross_encoder_score, when supplied, is a raw English query/document relevance logit,
+not a probability or scientific quality judgment; use it only as auxiliary ordering evidence.
+reference_value, when supplied, is an auxiliary citation/recency/diversity signal,
+not source evidence or a guarantee of quality. Keep final_score a relevance judgment.
+Use missing impact as unknown, not zero; do not infer evidence from citation totals.
 The payload may include target_coverage for research objects explicitly named by the user.
 Identity levels are lexical clues, not identity verification: title_direct means the
 normalized name starts a title and the rest is subtitle; title_related means the
@@ -117,7 +122,8 @@ def build_selection_payload(
         ranking = {
             key: details[key]
             for key in ("ranker", "keyword_rank", "semantic_rank", "cosine_similarity",
-                        "rrf_rank", "rrf_score", "model_name")
+                        "rrf_rank", "rrf_score", "model_name", "cross_encoder_score",
+                        "cross_encoder_rank", "cross_encoder_model")
             if details.get(key) is not None
         }
         paper_matches = matches_by_paper.get(p.paper_id, {}) if isinstance(matches_by_paper, dict) else {}
@@ -141,6 +147,7 @@ def build_selection_payload(
             "sources": p.sources,
             "initial_score": p.initial_score,
             **({"ranking": ranking} if ranking else {}),
+            **({"reference_value": details["value_features"]} if "value_features" in details else {}),
             "open_access": {
                 "pdf_url_available": bool(p.pdf_url or p.pdf_urls),
                 "note": "Known PDF URL only; public accessibility has not been verified",

@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "prepared_date": "2026-11-13",
+  "artifact_type": "historical_measurement_excerpt_and_engineering_checks",
+  "disclosure": "历史结果摘录，不是本轮重新计时，不是原始实验包或完整可复现数据。源文件位于本地忽略目录，未随此摘要提交。",
+  "current_version": {
+    "recovery": "按排名分批替补 batch",
+    "budget_order": ["单地址下载", "单篇下载", "全文阶段"],
+    "default_seconds": [45, 180, 180],
+    "slow_network_seconds": [90, 240, 600],
+    "custom": "三项数值可编辑，保存后用于新任务",
+    "excluded_runtime_strategies": ["rolling", "progressive"],
+    "claim_boundary": "工程检查不证明答案准确率改善或真实网络稳定提速；5 篇结果是特定对照中的观察，不是保证。"
+  },
+  "engineering_checks": {
+    "source": "data/diagnostics/stable-batch-restore-20261113/summary.json",
+    "recorded_checks": [
+      {"category": "Python automated tests", "passed": 541, "skipped": 3},
+      {"category": "Electron automated tests", "passed": 19, "skipped": 1, "skip_reason": "packaged artifacts unavailable"},
+      {"category": "desktop E2E", "passed_groups": 24, "fixture": true, "live_model_calls": 0},
+      {"category": "TypeScript typecheck", "result": "passed"},
+      {"category": "production build", "result": "passed"}
+    ],
+    "pr_preparation_checks_reported_by_coordinator": [
+      {"command": "npm run test:frontend", "passed": 18},
+      {"command": "python -m ruff check src tests scripts", "result": "passed"},
+      {"category": "source export without local data or configuration", "passed": 541, "skipped": 3, "seconds": 54.19, "dependency_environment": "reuse installed Python dependencies; not a fresh installation or remote CI"}
+    ],
+    "scope": "本机源码版检查；无新安装包验证，无本轮付费模型质量对照。"
+  },
+  "shared_live_controls": {
+    "input": "冻结候选与初选名单，不重做检索或 Selector",
+    "processing": "concurrent=3",
+    "methods": "layout + evidence_fast",
+    "cache": "本地 PDF 缓存关闭，输出目录隔离；上游 CDN 缓存不可控",
+    "model": "同一对照使用相同已保存模型配置；不导出凭据、私有端点或模型正文",
+    "excluded_stages": ["search", "selection", "final synthesis"],
+    "quality_boundary": "可用笔记计数不代表回答准确率；evidence_fast 基于选段，范围为 partial_fulltext。"
+  },
+  "timeout_comparison": {
+    "sources": ["data/diagnostics/timeout-comparison-20261112/summary.json", "data/diagnostics/timeout-comparison-20261112/comparison.json"],
+    "time_scope": "全文获取、转换和单篇模型笔记的合计耗时",
+    "rows_in_execution_order": [
+      {"topic_code": "rag", "arm": "default", "run_id": "9cf12ce4d4634a258fbc91c931a994a1", "seconds": 201.97, "readable": 2, "usable_notes": 2},
+      {"topic_code": "rag", "arm": "slow", "run_id": "73172143131c4a9c8076a2311112c465", "seconds": 98.41, "readable": 5, "usable_notes": 5},
+      {"topic_code": "memory", "arm": "slow", "run_id": "0624dec80fd44faeb1fb1314e8521798", "seconds": 553.88, "readable": 5, "usable_notes": 5},
+      {"topic_code": "memory", "arm": "default", "run_id": "897d5b8ba95c48a981ca76a046fd27a4", "seconds": 191.12, "readable": 3, "usable_notes": 3}
+    ],
+    "limits": "每主题仅一组；慢网预算在本组提高可用篇数，同时可能延长等待。首次缺少请求计数的 harness 运行被排除，未调用模型。"
+  },
+  "rolling_comparison": {
+    "source": "data/diagnostics/recovery-comparison-20261112/summary.json",
+    "budgets_seconds": [90, 240, 600],
+    "time_scope": "全文获取、转换和单篇模型笔记的合计耗时",
+    "rows_in_execution_order": [
+      {"pair": 1, "arm": "batch", "run_id": "fea4fa581f2741799a63bd0a547fb6e9", "seconds": 78.11, "readable": 5, "usable_notes": 5},
+      {"pair": 1, "arm": "rolling", "run_id": "f757a4d5e2e44a61b51ebb965f0807db", "seconds": 237.75, "readable": 5, "usable_notes": 5},
+      {"pair": 2, "arm": "rolling", "run_id": "1ccb875144704fb1b8e623f40b71b04b", "seconds": 63.51, "readable": 5, "usable_notes": 5},
+      {"pair": 2, "arm": "batch", "run_id": "3e210cbc075a4653b465727b33149832", "seconds": 89.31, "readable": 5, "usable_notes": 5}
+    ],
+    "decision": "两组一胜一负，无稳定线上优越性证据；四轮最终论文相同，不保证将来替补集合相同。",
+    "limits": "单一主题；首次 rolling 早于取消审计和转换收尾修复，取消请求计数可能偏低，耗时和成功篇数保留。"
+  },
+  "progressive_comparison": {
+    "source": "data/diagnostics/recovery-stability-20261112/summary.json",
+    "budgets_seconds": [90, 240, 600],
+    "time_scope": "仅全文下载和转换；第三组另做真实模型笔记验证，笔记时间未计入下表",
+    "execution_orders": [["batch", "progressive"], ["progressive", "batch"], ["batch", "progressive"]],
+    "rows": [
+      {"pair": 1, "arm": "batch", "run_id": "de00b7735eb0425fa2211f45a12849f5", "fulltext_seconds": 102.3030589000009, "complete_fulltexts": 5, "usable_notes": null},
+      {"pair": 1, "arm": "progressive", "run_id": "5286538f597c40eb941c5922b94787f5", "fulltext_seconds": 323.46144119999735, "complete_fulltexts": 5, "usable_notes": null},
+      {"pair": 2, "arm": "batch", "run_id": "1890bdff4d484f2bbc3a8e21513f2956", "fulltext_seconds": 114.63539949999904, "complete_fulltexts": 5, "usable_notes": null},
+      {"pair": 2, "arm": "progressive", "run_id": "c0c9c5e5b0f24609b6d05e9902b9d4a6", "fulltext_seconds": 149.90579849999995, "complete_fulltexts": 5, "usable_notes": null},
+      {"pair": 3, "arm": "batch", "run_id": "1949f89e4bbc4a13be535b9e9d01a722", "fulltext_seconds": 194.14653309999994, "complete_fulltexts": 5, "usable_notes": 5},
+      {"pair": 3, "arm": "progressive", "run_id": "49d4d0c9a76a47c3a27dccb1354908ea", "fulltext_seconds": 174.95466609999858, "complete_fulltexts": 5, "usable_notes": 5}
+    ],
+    "statistics": {
+      "batch": {"median_seconds": 114.63539949999904, "max_seconds": 194.14653309999994, "requests_total": 15, "received_bytes_total": 10028847},
+      "progressive": {"median_seconds": 174.95466609999858, "max_seconds": 323.46144119999735, "requests_total": 31, "received_bytes_total": 16587658}
+    },
+    "paired_progressive_wins": 1,
+    "decision": "不推广：只赢三组中的一组，中位数和观察最慢值均变差。",
+    "limits": "单一主题、三组配对；部分最终论文不同；并发 worker 累计时长不可相加解释为墙钟分解。"
+  }
+}

@@ -55,6 +55,12 @@ def cache_size() -> int:
         return len(_VECTOR_CACHE)
 
 
+def cached_paper_vectors(papers: list[Paper]) -> dict[str, list[float]]:
+    """Reuse completed semantic work without loading a model or making requests."""
+    return {paper.paper_id: vector for paper in papers
+            if (vector := _cache_get(_content_key("paper", _paper_text(paper)))) is not None}
+
+
 def _content_key(kind: str, *parts: str) -> str:
     digest = hashlib.sha256()
     digest.update(MODEL_NAME.encode("utf-8"))

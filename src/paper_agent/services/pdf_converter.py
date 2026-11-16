@@ -2,7 +2,8 @@
 
 PyMuPDF is not thread safe. All use in this module runs in a bounded worker pool
 under ``PDF_PARSE_LOCK``; other in-process PyMuPDF users should share that lock.
-The deterministic legacy PyMuPDF4LLM parser does not invoke OCR or model downloads.
+The installed CPU layout engine restores reading order/headings/tables. OCR is
+disabled; a layout exception falls back to the existing legacy parser with audit.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any
 
 from paper_agent.config import Settings
 from paper_agent.models import ErrorInfo, PageMapping, Paper
+from paper_agent.services.downloader import pdf_cache_identity, pdf_cache_key
 from paper_agent.services.pdf_runtime import (
     PDF_PARSE_LOCK,
     refresh_reading_status,
@@ -54,6 +56,17 @@ def _default_parser(document: Any) -> list[dict[str, Any]]:
         embed_images=False,
         margins=0,
         table_output="markdown",
+    )
+
+
+def _layout_parser(document: Any) -> list[dict[str, Any]]:
+    import pymupdf4llm
+
+    if not getattr(pymupdf4llm, "_use_layout", False):
+        raise PDFConversionError("layout_unavailable", "CPU 版面引擎不可用。")
+    return pymupdf4llm.to_markdown(
+        document, page_chunks=True, show_progress=False, use_ocr=False, force_ocr=False,
+        force_text=True, write_images=False, embed_images=False, header=True, footer=True,
     )
 
 
@@ -150,7 +163,8 @@ class PDFConverter:
 
     def __init__(self, *, settings: Settings | None = None, parser: PageParser | None = None):
         self.settings = settings or Settings.from_env()
-        self.parser = parser or _default_parser
+        self.parser_name = "custom" if parser is not None else self.settings.pdf_parser
+        self.parser = parser or (_layout_parser if self.parser_name == "layout" else _default_parser)
 
     async def convert(self, paper: Paper) -> Paper:
         # Snapshot before yielding: no nested containers of the input are mutated.
@@ -210,14 +224,25 @@ class PDFConverter:
                             "source_garbled_ratio": _garbled_ratio(raw),
                             "has_images": bool(page.get_images()),
                         })
+                    parser_used, fallback_type = self.parser_name, None
                     try:
                         pages = _page_chunks(self.parser(document), page_count)
-                    except PDFConversionError:
-                        raise
                     except Exception as exc:
-                        raise PDFConversionError(
-                            "parser_failed", "PyMuPDF4LLM could not extract this PDF.",
-                        ) from exc
+                        if self.parser_name == "layout":
+                            # Keep the existing parser as a bounded recovery, not a second pass on success.
+                            try:
+                                pages = _page_chunks(_default_parser(document), page_count)
+                            except PDFConversionError:
+                                raise
+                            except Exception as fallback_exc:
+                                raise PDFConversionError("parser_failed", "PDF 版面和后备解析均失败。") from fallback_exc
+                            parser_used, fallback_type = "legacy", type(exc).__name__
+                        elif isinstance(exc, PDFConversionError):
+                            raise
+                        else:
+                            raise PDFConversionError(
+                                "parser_failed", "PyMuPDF4LLM could not extract this PDF.",
+                            ) from exc
 
             contents: list[str] = []
             mappings: list[PageMapping] = []
@@ -235,6 +260,8 @@ class PDFConverter:
                 offset = end + 2
             markdown = "".join(contents)
             quality = _quality(source_pages, pages)
+            if fallback_type:
+                quality["warnings"].append("版面解析失败，已使用原有文本解析器；请核对复杂布局。")
             paper.fulltext_quality = quality
             if quality["text_page_count"] == 0:
                 if quality["suspected_scanned_pages"]:
@@ -244,15 +271,28 @@ class PDFConverter:
                 else:
                     code, message = "no_extractable_text", "PDF has no usable extractable text."
                 return _failure(paper, code, message, previous_markdown)
-            target = Path(self.settings.markdown_dir) / (
-                hashlib.sha256(paper.paper_id.encode("utf-8")).hexdigest() + ".md"
-            )
+            identity, ambiguous = pdf_cache_identity(paper)
+            downloads = paper.metadata.get("downloads", {})
+            acquired = downloads.get("cache_identity") if isinstance(downloads, dict) else None
+            if (isinstance(acquired, dict) and downloads.get("sha256")
+                    and acquired.get("paper_id") == paper.paper_id
+                    and isinstance(acquired.get("arxiv_version"), str)
+                    and re.fullmatch(r"v[1-9]\d*", acquired["arxiv_version"])):
+                # Describe the PDF actually acquired if Paper fields changed later.
+                identity = {key: acquired[key] for key in ("paper_id", "arxiv_id", "arxiv_version")
+                            if key in acquired}
+                ambiguous = False
+            stem = pdf_cache_key(identity)
+            if ambiguous:
+                stem += "-" + hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+            target = Path(self.settings.markdown_dir) / f"{stem}.md"
             _atomic_write(target, markdown)
             paper.markdown_path = str(target.resolve())
             paper.markdown_artifact_id = stable_artifact_id("markdown", paper.paper_id)
             paper.page_map = mappings
             paper.metadata["conversion"] = {
-                "parser": "pymupdf4llm.legacy", "parser_version": "1.28.2",
+                "parser": f"pymupdf4llm.{parser_used}", "parser_version": "1.28.2",
+                "requested_parser": self.parser_name, "fallback_error_type": fallback_type,
                 "ocr_enabled": False, "cache_hit": False,
                 "markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
             }

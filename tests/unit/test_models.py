@@ -86,14 +86,66 @@ def test_settings_compatible_and_secret_repr_safe(tmp_path):
     assert not (tmp_path / "pdfs").exists()
 
 
+def test_report_strategy_is_independent_and_survives_environment_and_snapshot(monkeypatch):
+    assert Settings().report_strategy == "structured"
+    monkeypatch.setenv("PAPER_AGENT_REPORT_STRATEGY", "structured")
+    monkeypatch.setenv("PAPER_AGENT_RESEARCH_PROFILE", "baseline")
+    current = Settings.from_env()
+    assert current.report_strategy == "structured"
+    assert current.paper_analysis_strategy == "direct"
+    baseline = replace(current, report_strategy="legacy")
+    assert current.experiment_snapshot()["config"]["report_strategy"] == "structured"
+    assert current.experiment_snapshot()["config_sha256"] != baseline.experiment_snapshot()["config_sha256"]
+    for invalid in ("unknown", True, None, []):
+        with pytest.raises(ValueError, match="Report strategy"):
+            replace(current, report_strategy=invalid).validate()
+
+
+def test_comparison_profiles_change_only_declared_methods_and_snapshots_exclude_secrets():
+    baseline = Settings(research_profile="baseline", llm_api_key="test-private-value", openalex_api_key="test-openalex-value")
+    base = baseline.experiment_snapshot(top_k=3)
+    for profile, expected in (("sources", {"crossref_enabled"}), ("ranking", {"cross_encoder_enabled"}), ("layout", {"pdf_parser"}), ("evidence", {"paper_analysis_strategy"}), ("evidence_fast", {"paper_analysis_strategy"}), ("grounded", {"paper_analysis_strategy"})):
+        settings = replace(baseline, research_profile=profile)
+        new = settings.experiment_snapshot(top_k=3)
+        assert {key for key in base["config"] if base["config"][key] != new["config"][key]} == expected
+        assert new["profile"] == profile
+    assert base["config"]["top_k"] == 3 and base["config"]["pdf_parser"] == "legacy"
+    assert base["config_sha256"] == baseline.experiment_snapshot(top_k=3)["config_sha256"]
+    assert "private" not in str(base) and "openalex-value" not in str(base)
+    assert "llm_api_key" not in base["config"]
+    with pytest.raises(ValueError):
+        Settings(research_profile="invalid")
+
+
 def test_environment_configuration_and_invalid_boolean(monkeypatch, tmp_path):
     monkeypatch.setenv("PAPER_AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("PAPER_AGENT_TOP_K", "7")
     monkeypatch.setenv("PAPER_AGENT_CACHE_ENABLED", "false")
+    monkeypatch.setenv("PAPER_AGENT_FULLTEXT_TIMEOUT", "42")
     settings = Settings.from_env()
     assert settings.top_k == 7
     assert settings.cache_enabled is False
+    assert settings.fulltext_timeout == 42
+    assert settings.crossref_enabled is True
+    assert settings.pdf_parser == "layout" and settings.cross_encoder_enabled is False
     assert settings.pdf_dir == tmp_path / "pdfs"
     monkeypatch.setenv("PAPER_AGENT_CACHE_ENABLED", "maybe")
     with pytest.raises(ValueError, match="boolean"):
         Settings.from_env()
+
+
+def test_reranking_strategies_are_explicit_and_invalid_parser_is_rejected(monkeypatch):
+    monkeypatch.setenv("PAPER_AGENT_CROSS_ENCODER_ENABLED", "true")
+    monkeypatch.setenv("PAPER_AGENT_PDF_PARSER", "legacy")
+    settings = Settings.from_env()
+    assert settings.cross_encoder_enabled and settings.pdf_parser == "legacy"
+    with pytest.raises(ValueError, match="either"):
+        replace(settings, value_ranking_enabled=True).validate()
+    with pytest.raises(ValueError, match="PDF_PARSER"):
+        Settings(pdf_parser="unknown").validate()
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_fulltext_stage_timeout_is_bounded(timeout):
+    with pytest.raises(ValueError, match="finite and positive"):
+        Settings(fulltext_timeout=timeout).validate()

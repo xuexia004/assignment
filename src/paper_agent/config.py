@@ -1,5 +1,7 @@
 """Shared settings. Owners 01/02 coordinate changes."""
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,10 +10,25 @@ from typing import Literal
 from dotenv import load_dotenv
 
 SELECTOR_CANDIDATE_LIMIT = 20
+_BASELINE_METHODS = dict(ranker="semantic", crossref_enabled=False, cross_encoder_enabled=False,
+                         pdf_parser="legacy", paper_analysis_strategy="direct", value_ranking_enabled=False)
+RESEARCH_PROFILES = {
+    "custom": {"ranker": "semantic", "value_ranking_enabled": False},
+    "current": {},
+    "baseline": _BASELINE_METHODS,
+    "sources": {**_BASELINE_METHODS, "crossref_enabled": True},
+    "ranking": {**_BASELINE_METHODS, "cross_encoder_enabled": True},
+    "layout": {**_BASELINE_METHODS, "pdf_parser": "layout"},
+    "evidence": {**_BASELINE_METHODS, "paper_analysis_strategy": "evidence"},
+    "evidence_fast": {**_BASELINE_METHODS, "paper_analysis_strategy": "evidence_fast"},
+    "grounded": {**_BASELINE_METHODS, "paper_analysis_strategy": "grounded"},
+    "enhanced": {**_BASELINE_METHODS, "crossref_enabled": True, "cross_encoder_enabled": True, "pdf_parser": "layout"},
+}
 
 
 @dataclass(frozen=True)
 class Settings:
+    research_profile: str = "current"
     mode: Literal["demo", "live"] = "demo"
     output_dir: Path = Path("data/runs")
     processing: Literal["serial", "concurrent"] = "serial"
@@ -21,9 +38,15 @@ class Settings:
     merged_candidate_limit: int = 0
     selector_input_token_budget: int = 256000
     analysis_input_token_budget: int = 256000
+    paper_analysis_strategy: str = "direct"
+    report_strategy: str = "structured"
     report_input_token_budget: int = 256000
     max_fulltext_attempts: int = 0
+    fulltext_timeout: float = 180.0
+    pdf_parser: str = "layout"
     ranker: str = "semantic"
+    value_ranking_enabled: bool = False
+    cross_encoder_enabled: bool = False
     llm_base_url: str = "https://api.deepseek.com"
     llm_api_key: str = field(default="", repr=False)
     llm_model: str = "deepseek-flash"
@@ -32,6 +55,7 @@ class Settings:
     chunk_chars: int = 12000
     max_chunks: int = 16
     openalex_api_key: str = field(default="", repr=False)
+    crossref_enabled: bool = True
     http_timeout: float = 30
     http_proxy: str = ""
     top_k: int = 5
@@ -64,6 +88,10 @@ class Settings:
     llm_thinking_enabled: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.research_profile, str) or self.research_profile not in RESEARCH_PROFILES:
+            raise ValueError("Unknown research comparison profile")
+        for name, value in RESEARCH_PROFILES[self.research_profile].items():
+            object.__setattr__(self, name, value)
         # No directory creation on import/configuration; modules create paths on use.
         for name, suffix in (
             ("pdf_dir", "pdfs"),
@@ -78,10 +106,27 @@ class Settings:
     def execution_mode(self) -> Literal["sequential", "concurrent"]:
         return "concurrent" if self.processing == "concurrent" else "sequential"
 
+    def experiment_snapshot(self, *, top_k: int | None = None) -> dict:
+        """Declared controls only: never serialize settings, credentials or private endpoints."""
+        names = ("mode", "ranker", "crossref_enabled", "cross_encoder_enabled", "pdf_parser",
+                 "paper_analysis_strategy", "report_strategy", "value_ranking_enabled", "processing", "concurrency",
+                 "source_limit", "search_concurrency", "download_concurrency", "conversion_concurrency",
+                 "llm_concurrency", "llm_model", "llm_thinking_enabled", "llm_max_output_tokens",
+                 "llm_max_calls", "llm_max_total_tokens", "llm_timeout", "http_timeout",
+                 "selector_input_token_budget", "analysis_input_token_budget", "report_input_token_budget",
+                 "max_fulltext_attempts", "fulltext_timeout", "download_candidate_timeout", "download_timeout",
+                 "cache_enabled", "cache_mode")
+        controls = {name: getattr(self, name) for name in names}
+        controls.update(top_k=self.top_k if top_k is None else top_k, selector_candidate_limit=SELECTOR_CANDIDATE_LIMIT)
+        digest = hashlib.sha256(json.dumps(controls, sort_keys=True).encode("utf-8")).hexdigest()
+        return {"schema_version": 1, "profile": self.research_profile, "config_sha256": digest,
+                "config": controls, "scope": "declared_configuration_not_actual_execution_or_quality"}
+
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv(override=False)
         settings = cls(
+            research_profile=os.getenv("PAPER_AGENT_RESEARCH_PROFILE", "current"),
             mode=os.getenv("PAPER_AGENT_MODE", "demo"),
             output_dir=Path(os.getenv("PAPER_AGENT_OUTPUT_DIR", "data/runs")).resolve(),
             processing=os.getenv("PAPER_AGENT_PROCESSING", "serial"),
@@ -91,9 +136,15 @@ class Settings:
             merged_candidate_limit=int(os.getenv("PAPER_AGENT_MERGED_CANDIDATE_LIMIT", "0")),
             selector_input_token_budget=int(os.getenv("PAPER_AGENT_SELECTOR_INPUT_TOKEN_BUDGET", "256000")),
             analysis_input_token_budget=int(os.getenv("PAPER_AGENT_ANALYSIS_INPUT_TOKEN_BUDGET", "256000")),
+            paper_analysis_strategy=os.getenv("PAPER_AGENT_PAPER_ANALYSIS_STRATEGY", "direct"),
+            report_strategy=os.getenv("PAPER_AGENT_REPORT_STRATEGY", "structured"),
             report_input_token_budget=int(os.getenv("PAPER_AGENT_REPORT_INPUT_TOKEN_BUDGET", "256000")),
             max_fulltext_attempts=int(os.getenv("PAPER_AGENT_MAX_FULLTEXT_ATTEMPTS", "0")),
+            fulltext_timeout=float(os.getenv("PAPER_AGENT_FULLTEXT_TIMEOUT", "180")),
+            pdf_parser=os.getenv("PAPER_AGENT_PDF_PARSER", "layout"),
             ranker=os.getenv("PAPER_AGENT_RANKER", "semantic"),
+            value_ranking_enabled=_env_bool("PAPER_AGENT_VALUE_RANKING_ENABLED", False),
+            cross_encoder_enabled=_env_bool("PAPER_AGENT_CROSS_ENCODER_ENABLED", False),
             llm_base_url=_preferred_env("LLM_BASE_URL", "DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/"),
             llm_api_key=_preferred_env("LLM_API_KEY", "DEEPSEEK_API_KEY", ""),
             llm_model=_preferred_env("LLM_MODEL", "DEEPSEEK_MODEL", "deepseek-flash"),
@@ -103,6 +154,7 @@ class Settings:
             chunk_chars=int(os.getenv("LLM_CHUNK_CHARS", "12000")),
             max_chunks=int(os.getenv("LLM_MAX_CHUNKS", "16")),
             openalex_api_key=os.getenv("OPENALEX_API_KEY", ""),
+            crossref_enabled=_env_bool("PAPER_AGENT_CROSSREF_ENABLED", True),
             http_timeout=float(os.getenv("HTTP_TIMEOUT_SECONDS", "30")),
             http_proxy=os.getenv("PAPER_AGENT_HTTP_PROXY", ""),
             top_k=int(os.getenv("PAPER_AGENT_TOP_K", "5")),
@@ -137,6 +189,16 @@ class Settings:
         return settings
 
     def validate(self) -> None:
+        if not isinstance(self.report_strategy, str) or self.report_strategy not in {"legacy", "structured"}:
+            raise ValueError("Report strategy must be legacy or structured")
+        if self.cross_encoder_enabled and self.value_ranking_enabled:
+            raise ValueError("Choose either cross-encoder or experimental value reranking")
+        if self.pdf_parser not in {"layout", "legacy"}:
+            raise ValueError("PAPER_AGENT_PDF_PARSER must be layout or legacy")
+        if self.paper_analysis_strategy not in {"direct", "sections", "evidence", "evidence_fast", "grounded"}:
+            raise ValueError("Paper analysis strategy must be direct, sections, evidence, evidence_fast or grounded")
+        if not 0 < self.fulltext_timeout < float("inf"):
+            raise ValueError("Fulltext stage timeout must be finite and positive")
         if self.mode not in {"demo", "live"}:
             raise ValueError("PAPER_AGENT_MODE must be demo or live")
         if self.processing not in {"serial", "concurrent"}:
@@ -184,6 +246,7 @@ class Settings:
             self.max_pdf_bytes,
             self.download_timeout,
             self.download_candidate_timeout,
+            self.fulltext_timeout,
         ) <= 0:
             raise ValueError("Budgets, download size and timeout must be positive")
         if not 0 <= self.max_redirects <= 10:

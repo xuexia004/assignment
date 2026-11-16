@@ -41,6 +41,8 @@ test('config validation keeps only the shared allowlist and checks known fields'
   });
   assert.throws(() => validators.validateConfigUpdate({ api_key: 42 }), /格式不正确/);
   assert.throws(() => validators.validateConfigUpdate({ concurrency: 100 }), /范围/);
+  assert.deepEqual(validators.validateConfigUpdate({ research_profile: 'baseline' }), { research_profile: 'baseline' });
+  assert.throws(() => validators.validateConfigUpdate({ research_profile: 'unknown' }), /对照配置/);
 });
 
 test('service endpoint accepts only authenticated loopback descriptors for API v3', () => {
@@ -163,4 +165,35 @@ test('conversation messages stay bounded through the IPC boundary', () => {
   assert.throws(() => validators.validateConversation({
     ...conversation, messages: [{ ...conversation.messages[0], job_id: 'bad id' }],
   }));
+});
+
+
+test('independent research controls are typed and allowlisted', () => {
+  const fields = { research_profile: 'custom', crossref_enabled: false, cross_encoder_enabled: true,
+    pdf_parser: 'layout', paper_analysis_strategy: 'grounded', report_strategy: 'structured' };
+  assert.deepEqual(validators.validateConfigUpdate(fields), fields);
+  for (const bad of [{crossref_enabled: 'false'}, {pdf_parser: 'other'}, {paper_analysis_strategy: ['grounded']},
+    {report_strategy: 'other'}, {report_strategy: true}, {report_strategy: ['structured']}]) {
+    assert.throws(() => validators.validateConfigUpdate(bad));
+  }
+  const legacyConfig = { provider: 'deepseek', base_url: 'https://example.org', model: 'fixture',
+    api_key_configured: false, openalex_api_key_configured: false, thinking_enabled: false,
+    http_proxy: '', default_top_k: 5, default_execution_mode: 'auto', concurrency: 3,
+    llm_timeout: 120, http_timeout: 30 };
+  assert.equal(validators.validatePublicConfig(legacyConfig).report_strategy, undefined);
+  for (const report_strategy of ['legacy', 'structured']) {
+    assert.equal(validators.validatePublicConfig({...legacyConfig, report_strategy}).report_strategy, report_strategy);
+  }
+  assert.throws(() => validators.validatePublicConfig({...legacyConfig, report_strategy: 'other'}));
+});
+
+
+test('timeout budget fields accept presets and reject nonfinite or out-of-range values', () => {
+  const slow = {download_candidate_timeout: 90, download_timeout: 240, fulltext_timeout: 600};
+  assert.deepEqual(validators.validateConfigUpdate(slow), slow);
+  for (const key of Object.keys(slow)) {
+    for (const value of [true, '90', 0, NaN, Infinity, 99999]) {
+      assert.throws(() => validators.validateConfigUpdate({[key]: value}));
+    }
+  }
 });

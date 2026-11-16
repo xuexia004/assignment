@@ -7,10 +7,14 @@ always uses the shared module contracts. Offline fixtures are explicitly labeled
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import re
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +26,7 @@ from paper_agent.config import SELECTOR_CANDIDATE_LIMIT, Settings
 from paper_agent.llm_client import ChatClient
 from paper_agent.models import ErrorInfo, Paper, PaperSummary, PipelineResult, StageTiming
 from paper_agent.services.author_keywords import enrich_cached_author_keywords
+from paper_agent.services.cross_encoder_reranker import cross_encoder_rerank
 from paper_agent.services.downloader import download_pdf
 from paper_agent.services.pdf_converter import convert_pdf
 from paper_agent.services.retrieval import (
@@ -32,8 +37,14 @@ from paper_agent.services.retrieval import (
     plan_queries,
     target_in_text,
 )
-from paper_agent.services.semantic_reranker import semantic_rerank
+from paper_agent.services.semantic_reranker import (
+    _paper_text,
+    cached_paper_vectors,
+    semantic_rerank,
+)
+from paper_agent.services.value_reranker import value_rerank
 from paper_agent.sources.arxiv_source import search_arxiv
+from paper_agent.sources.crossref_source import search_crossref
 from paper_agent.sources.openalex_source import search_openalex
 from paper_agent.storage import PipelineStore
 
@@ -69,6 +80,17 @@ def _add_errors(run: PipelineResult, errors) -> None:
             seen.add(key)
 
 
+class _AnalysisClient:
+    """Bound actual JSON requests across papers and their internal sections."""
+
+    def __init__(self, model, gate):
+        self.model, self.gate = model, gate
+
+    async def json(self, system, user):
+        async with self.gate:
+            return await self.model.json(system, user)
+
+
 class ResearchPipeline:
     """One server-owned LLM shares task-Agent concurrency and request budgets.
 
@@ -78,7 +100,7 @@ class ResearchPipeline:
     """
 
     def __init__(self, settings: Settings, *, llm=None, search_arxiv_fn=None,
-                 search_openalex_fn=None, query_planner_fn=None, selector_fn=None,
+                 search_openalex_fn=None, search_crossref_fn=None, query_planner_fn=None, selector_fn=None,
                  download_fn=None, convert_fn=None, summarize_fn=None, report_fn=None,
                  store=None):
         settings.validate()
@@ -90,6 +112,8 @@ class ResearchPipeline:
         self._injected_llm = llm is not None
         self.searchers = {"arxiv": search_arxiv_fn or search_arxiv,
                           "openalex": search_openalex_fn or search_openalex}
+        if settings.crossref_enabled and (settings.mode == "live" or search_crossref_fn is not None):
+            self.searchers["crossref"] = search_crossref_fn or search_crossref
         self.query_planner = query_planner_fn or plan_queries
         self.selector = selector_fn or select_top_k
         self.download = download_fn or download_pdf
@@ -105,6 +129,7 @@ class ResearchPipeline:
         self._download_gate = asyncio.Semaphore(settings.download_concurrency)
         self._convert_gate = asyncio.Semaphore(settings.conversion_concurrency)
         self._llm_gate = asyncio.Semaphore(settings.llm_concurrency)
+        self._analysis_gate = asyncio.Semaphore(settings.llm_concurrency)
         if settings.mode == "demo":
             from paper_agent.demo_fixtures import DemoLLM, demo_papers, prepare_demo_paper
 
@@ -162,14 +187,17 @@ class ResearchPipeline:
 
     def _settings_for(self, run: PipelineResult) -> Settings:
         directory = self.store.directory(run.run_id)
-        # Independent summary/report output prevents experiments overwriting each other.
-        return replace(self.settings, summaries_dir=directory / "summaries",
+        # Conversion output must also be independent: baseline/layout share paper IDs.
+        return replace(self.settings, markdown_dir=directory / "markdown", summaries_dir=directory / "summaries",
                        reports_dir=directory / "reports")
 
     def _load(self, run_id: str) -> PipelineResult:
         run = self.store.load(run_id)
         if run.mode != self.settings.mode or run.execution_mode != self.settings.execution_mode:
             raise ValueError("继续运行需要保持原始模式和执行方式。")
+        snapshot = run.metrics.get("experiment")
+        if isinstance(snapshot, dict) and snapshot.get("config_sha256") != self.settings.experiment_snapshot(top_k=run.top_k)["config_sha256"]:
+            raise ValueError("继续运行需要保持原始对照配置与预算。")
         return run
 
     @staticmethod
@@ -187,6 +215,10 @@ class ResearchPipeline:
                              mode=self.settings.mode, execution_mode=self.settings.execution_mode)
         run.output_dir = str(self.store.directory(run.run_id))
         run.metrics = {"completed_stages": [], "source_success": {}, "source_requests": {},
+                       "comparison_inputs": {},
+                       "experiment": self.settings.experiment_snapshot(top_k=k),
+                       "required_sources": ["arxiv", "openalex"],
+                       "optional_sources": [s for s in self.searchers if s not in {"arxiv", "openalex"}],
                        "http_requests": {"source_search": 0, "download": 0, "total": 0},
                        "cache_hits": {"download": 0, "conversion": 0}, "llm_usage": {},
                        "replacements": [], "replacement_attempts": [],
@@ -409,12 +441,16 @@ class ResearchPipeline:
 
         async def source_search(source):
             papers, count = [], 0
+            self.store.event(run.run_id, f"{source}_search", event="start", source=source,
+                             message=f"正在检索 {source} 学术元数据。")
             async def on_request(request):
                 nonlocal count
                 count += 1
             entries = source_query_plans.get(source, [])
             try:
-                async with self._source_gate:
+                async with self._source_gate, asyncio.timeout(
+                    self.settings.http_timeout if source == "crossref" else None,
+                ):
                     if self.settings.mode == "demo":
                         for entry in entries:
                             audit_item = {**entry, "result_count": 0, "error_code": None}
@@ -455,10 +491,18 @@ class ResearchPipeline:
             except Exception as exc:
                 run.metrics["source_success"][source] = False
                 run.source_counts[source] = len(papers)
-                run.errors.append(_failure(exc, "search"))
+                failure = _failure(exc, "search")
+                failure.details["source"] = source
+                run.errors.append(failure)
                 return papers
             finally:
                 run.metrics["source_requests"][source] = count
+                self.store.event(run.run_id, f"{source}_search", event="finish", source=source,
+                                 success=run.metrics["source_success"].get(source, False),
+                                 result_count=len(papers), requests=count,
+                                 message=(f"{source} 检索完成，返回 {len(papers)} 条元数据。"
+                                          if run.metrics["source_success"].get(source, False)
+                                          else f"{source} 检索未完成，已保留 {len(papers)} 条元数据。"))
 
         batches = await self._map(source_search, list(self.searchers))
         plan["source_queries"] = run.metrics.get("source_query_audit", {})
@@ -466,6 +510,13 @@ class ResearchPipeline:
         ranked = merge_dedupe_rank([paper for batch in batches for paper in batch], ranking_query)
         run.metrics["retrieved_count"] = sum(run.source_counts.values())
         run.metrics["unique_count"] = len(ranked)
+        run.metrics["source_coverage"] = {
+            source: {"retrieved_count": run.source_counts.get(source, 0),
+                     "merged_count": sum(source in p.sources for p in ranked),
+                     "exclusive_count": sum(set(p.sources) == {source} for p in ranked),
+                     "with_abstract_count": sum(source in p.sources and bool(p.abstract.strip()) for p in ranked)}
+            for source in self.searchers
+        }
         run.metrics["merged_count"] = len(ranked)
         # Real semantic ranking sees every deduplicated candidate. Offline demo
         # fixtures do not load an embedding model.
@@ -494,6 +545,30 @@ class ResearchPipeline:
                 "candidate_count": len(ranked), "encoded_count": 0, "cache_hits": 0,
                 "duration_seconds": 0.0,
             }
+        def input_digest(papers):
+            records = [{"paper_id": p.paper_id, "text": _paper_text(p), "year": p.year}
+                       for p in sorted(papers, key=lambda p: p.paper_id)]
+            return hashlib.sha256(json.dumps({"query": ranking_query, "records": records},
+                                             ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+        run.metrics["comparison_inputs"] = {"candidate_content_sha256": input_digest(ranked)}
+        if self.settings.cross_encoder_enabled and run.mode != "demo":
+            ranked, cross_audit = await cross_encoder_rerank(ranking_query, ranked)
+            ranking_audit["cross_encoder"] = cross_audit
+            ranking_audit["duration_seconds"] += cross_audit.get("duration_seconds", 0.0)
+            self.store.event(run.run_id, "semantic_ranker", event="cross_encoder",
+                             applied=cross_audit["applied"], method=cross_audit["method"],
+                             message="查询与论文联合重排完成。" if cross_audit["applied"] else "联合重排未执行，保留原排序。")
+        if self.settings.value_ranking_enabled:
+            ranked, value_audit = value_rerank(
+                ranked, cached_paper_vectors(ranked[:40]), as_of=datetime.now(timezone.utc).date(),
+                prefer_recent=bool(re.search(r"近期|最新|近年|\brecent\b|\blatest\b", run.idea, re.I)),
+                anchor_count=run.top_k,
+            )
+            ranking_audit["value_ranking"] = value_audit
+            self.store.event(run.run_id, "semantic_ranker", event="value_ranking",
+                             applied=value_audit["applied"], method=value_audit["method"],
+                             message="参考价值与去冗余调整完成。" if value_audit["applied"] else "参考价值调整未执行，保留原相关性顺序。")
         # Keep all ranked candidates for PDF fallback; only the first 20 go to the Agent.
         full_ranked = ranked
         coverage = match_explicit_targets(targets, full_ranked) if targets else {}
@@ -556,6 +631,7 @@ class ResearchPipeline:
             bool(paper.metadata.get("author_keywords")) for paper in full_ranked
         )
         run.metrics["ranking"] = ranking_audit
+        run.metrics["comparison_inputs"]["selector_candidate_content_sha256"] = input_digest(selector_pool)
         run.papers = full_ranked
         run.metrics.update(
             candidate_pool=pool_audit, target_coverage=coverage,
@@ -676,8 +752,16 @@ class ResearchPipeline:
 
     @staticmethod
     def _readable(paper: Paper) -> bool:
-        return bool(paper.markdown_path and Path(paper.markdown_path).is_file()
-                    and Path(paper.markdown_path).stat().st_size > 0 and paper.page_map)
+        if not paper.markdown_path:
+            return False
+        try:
+            path = Path(paper.markdown_path)
+            if path.stat().st_size > 64 * 1024 * 1024:
+                return False
+            return bool(path.read_text(encoding="utf-8").strip())
+        except (OSError, UnicodeError, ValueError):
+            pass
+        return False
 
     @staticmethod
     def _has_pdf(paper: Paper) -> bool:
@@ -692,7 +776,7 @@ class ResearchPipeline:
 
     @classmethod
     def _complete(cls, paper: Paper) -> bool:
-        return bool(cls._readable(paper) and paper.pdf_path and Path(paper.pdf_path).is_file()
+        return bool(cls._readable(paper) and cls._has_pdf(paper) and paper.page_map
                     and paper.status == "converted" and paper.fulltext_quality.get("complete") is True)
 
     async def prepare_fulltexts(self, run_id: str) -> PipelineResult:
@@ -704,6 +788,8 @@ class ResearchPipeline:
             if "fulltexts" in run.metrics["completed_stages"]:
                 return run
             start, before = time.perf_counter(), _usage(self.llm)
+            deadline = start + self.settings.fulltext_timeout
+            run_settings = self._settings_for(run)
             attempted: dict[str, Paper] = {}
             attempt_order: list[str] = []
             coverage = run.metrics.get("target_coverage")
@@ -711,51 +797,64 @@ class ResearchPipeline:
 
             async def prepare(paper):
                 result = paper.model_copy(deep=True)
+                attempt_order.append(paper.paper_id)
                 title = paper.title or paper.paper_id
                 detail = {"paper_id": paper.paper_id, "title": title}
                 self.store.event(run_id, "fulltext_paper", event="queued", step="download",
                                  message=f"等待下载《{title}》。", **detail)
                 try:
-                    async with self._download_gate:
-                        async with self._activity(run_id, "fulltext_paper", f"正在下载《{title}》",
-                                                  step="download", **detail):
-                            result = await self.download(result, settings=self.settings)
-                    self.store.event(run_id, "fulltext_paper", event="finish", step="download",
-                                     message=(f"《{title}》PDF 已取得。" if self._has_pdf(result)
-                                              else f"《{title}》未取得可用 PDF，将按候选顺序尝试替补。"),
-                                     status=result.status, **detail)
-                    if self._has_pdf(result):
-                        self.store.event(run_id, "fulltext_paper", event="queued", step="conversion",
-                                         message=f"等待转换《{title}》的 PDF。", **detail)
-                        async with self._convert_gate:
-                            async with self._activity(run_id, "fulltext_paper", f"正在转换《{title}》为 Markdown",
-                                                      step="conversion", **detail):
-                                result = await self.convert(result, settings=self.settings)
+                    async with asyncio.timeout(max(0, deadline - time.perf_counter())):
+                        async with self._download_gate:
+                            async with self._activity(run_id, "fulltext_paper", f"正在下载《{title}》",
+                                                      step="download", **detail):
+                                result = await self.download(result, settings=run_settings)
+                        self.store.event(run_id, "fulltext_paper", event="finish", step="download",
+                                         message=(f"《{title}》PDF 已取得。" if self._has_pdf(result)
+                                                  else f"《{title}》未取得可用 PDF，将按候选顺序尝试替补。"),
+                                         status=result.status, **detail)
+                        if self._has_pdf(result):
+                            self.store.event(run_id, "fulltext_paper", event="queued", step="conversion",
+                                             message=f"等待转换《{title}》的 PDF。", **detail)
+                            async with self._convert_gate:
+                                async with self._activity(run_id, "fulltext_paper", f"正在转换《{title}》为 Markdown",
+                                                          step="conversion", **detail):
+                                    result = await self.convert(result, settings=run_settings)
+                except TimeoutError:
+                    result.status = "fulltext_timeout"
+                    result.error = "全文处理阶段总时限已到，保留已取得的材料。"
+                    result.errors.append(ErrorInfo(
+                        code="fulltext_timeout", message=result.error, stage="fulltexts",
+                        paper_id=paper.paper_id, retryable=True,
+                    ))
                 except Exception as exc:
                     result.status, result.error = "failed", "全文处理失败"
                     result.errors.append(_failure(exc, "fulltexts", paper.paper_id))
+                finally:
+                    attempted[result.paper_id] = result
+                    run.papers = [attempted.get(p.paper_id, p) for p in run.papers]
+                    run.metrics.update(attempted_paper_ids=list(attempt_order), attempted_count=len(attempt_order))
+                    _add_errors(run, result.errors)
+                    self.store.save(run)
                 self.store.event(run_id, "fulltext_paper", paper_id=paper.paper_id,
                                  title=title, event="finish", step="fulltext",
                                  message=(f"《{title}》全文处理完成。" if self._complete(result)
-                                          else f"《{title}》全文处理未完整完成，已保留实际取得的材料。"),
+                                          else f"《{title}》已保留部分正文。" if self._readable(result)
+                                          else f"《{title}》没有可分析正文，将在预算内按候选顺序尝试替补。"),
                                  status=result.status, complete=self._complete(result),
                                  error_codes=[error.code for error in result.errors])
                 return result
 
             async def prepare_initial(item):
                 index, paper = item
-                result = await prepare(paper)
-                result.metadata["fulltext_provenance"] = {
+                original = paper.model_copy(deep=True)
+                original.metadata["fulltext_provenance"] = {
                     "role": "original", "attempt_order": index + 1,
                     "original_paper_id": paper.paper_id,
                 }
-                return result
+                return await prepare(original)
 
             initial = await self._map(prepare_initial, list(enumerate(run.selected_papers)))
-            for result in initial:
-                attempted[result.paper_id] = result
-                attempt_order.append(result.paper_id)
-            acquired = [p for p in initial if self._has_pdf(p)]
+            acquired = [p for p in initial if self._readable(p)]
             acquired_ids = {p.paper_id for p in acquired}
             unavailable = [p for p in initial if p.paper_id not in acquired_ids]
             slots = [p.paper_id for p in unavailable]
@@ -764,9 +863,11 @@ class ResearchPipeline:
             remaining = [p for p in run.papers if p.paper_id not in original_ids]
             replacements: list[dict[str, str]] = []
             replacement_attempts: list[dict[str, Any]] = []
-            replacement_budget = self.settings.max_fulltext_attempts or len(remaining)
+            run.metrics.update(replacements=replacements, replacement_attempts=replacement_attempts)
+            replacement_budget = self.settings.max_fulltext_attempts or 2 * run.top_k
             replacements_attempted = 0
-            while len(acquired) < run.top_k and remaining and replacements_attempted < replacement_budget:
+            while (len(acquired) < run.top_k and remaining and replacements_attempted < replacement_budget
+                   and time.perf_counter() < deadline):
                 requested = min(run.top_k - len(acquired), replacement_budget - replacements_attempted)
                 if requested <= 0:
                     break
@@ -783,8 +884,8 @@ class ResearchPipeline:
                     original_id = next(
                         (slot for slot in slots if slot not in filled_slots), None
                     )
-                    if acquired_flag:
-                        role = "replacement_complete" if complete_flag else "replacement_pdf"
+                    if readable:
+                        role = "replacement_complete" if complete_flag else "replacement_partial"
                         if original_id is not None:
                             filled_slots.add(original_id)
                             replacements.append({
@@ -793,13 +894,12 @@ class ResearchPipeline:
                             })
                         acquired.append(paper)
                     else:
-                        role = "replacement_partial" if readable else "replacement_failed"
+                        role = "replacement_failed"
                     paper.metadata["fulltext_provenance"] = {
-                        "role": role, "attempt_order": len(attempt_order) + 1,
+                        "role": role, "attempt_order": attempt_order.index(paper.paper_id) + 1,
                         "original_paper_id": original_id,
                     }
                     attempted[paper.paper_id] = paper
-                    attempt_order.append(paper.paper_id)
                     failure_codes = [
                         error.code for error in paper.errors if isinstance(error.code, str)
                     ]
@@ -821,9 +921,13 @@ class ResearchPipeline:
                         ),
                         "open_access_url": bool(paper.pdf_url or paper.pdf_urls),
                     })
-            # A downloaded PDF keeps its place even if conversion is partial or
-            # fails. Summary scope and fulltext_count still reflect real quality.
-            analysis = acquired[:run.top_k]
+                    self.store.save(run)
+            # Prefer readable bodies. If recovery is exhausted, preserve original
+            # PDFs for their honest abstract-only fallback rather than lose them.
+            readable_ids = {p.paper_id for p in acquired}
+            analysis = (acquired + [p for p in initial if self._has_pdf(p)
+                                    and p.paper_id not in readable_ids
+                                    and p.paper_id not in filled_slots])[:run.top_k]
             complete = [paper for paper in analysis if self._complete(paper)]
             analysis_ids = {paper.paper_id for paper in analysis}
             for paper in initial:
@@ -849,10 +953,14 @@ class ResearchPipeline:
                     if item["in_analysis"] and not item["complete"]
                 ],
                 fulltext_count=len(complete),
-                pdf_acquired_count=len(analysis),
+                pdf_acquired_count=sum(self._has_pdf(p) for p in analysis),
+                downloaded_pdf_count=sum(self._has_pdf(p) for p in attempted.values()),
+                readable_count=len(acquired),
+                fulltext_attempt_limit=replacement_budget,
+                fulltext_timeout_seconds=self.settings.fulltext_timeout,
+                fulltext_time_limit_reached=time.perf_counter() >= deadline,
                 fulltext_attempt_limit_reached=bool(
-                    self.settings.max_fulltext_attempts and remaining
-                    and len(analysis) < run.top_k),
+                    remaining and len(acquired) < run.top_k and replacements_attempted >= replacement_budget),
                 replacement_candidates_remaining=[p.paper_id for p in remaining],
                 partial_fulltext_count=sum(
                     self._readable(p) and not self._complete(p) for p in analysis
@@ -860,6 +968,8 @@ class ResearchPipeline:
             )
             for paper in attempted.values():
                 _add_errors(run, paper.errors)
+            run.metrics.setdefault("comparison_inputs", {})["pdf_sha256_by_paper"] = {
+                p.paper_id: p.metadata.get("downloads", {}).get("sha256") for p in analysis}
             downloads = sum(int(p.metadata.get("downloads", {}).get("request_count", 0)) for p in attempted.values())
             run.metrics["http_requests"]["download"] = downloads
             run.metrics["http_requests"]["total"] += downloads
@@ -888,13 +998,22 @@ class ResearchPipeline:
             async def summarize(paper_id):
                 nonlocal finished, usable
                 title = by_id[paper_id].title or paper_id
+                if self.settings.paper_analysis_strategy in {"evidence", "evidence_fast"}:
+                    # English query planning is already part of the research flow.
+                    # Keep a specific English user question when available.
+                    by_id[paper_id].metadata["evidence_query"] = (
+                        run.query if any("\u4e00" <= c <= "\u9fff" for c in run.idea) and run.query
+                        else run.idea
+                    )
                 try:
-                    async with self._llm_gate:
-                        async with self._activity(run_id, "research_summarize", f"正在分析《{title}》并等待模型响应",
-                                                  paper_id=paper_id, title=title, total=total,
-                                                  agent="llm_research_analyst", synthetic=run.mode == "demo"):
-                            value = await self.summarize(run.idea, by_id[paper_id],
-                                                         settings=self._settings_for(run), llm=self._model())
+                    async with self._analysis_gate, self._activity(
+                        run_id, "research_summarize", f"正在分析《{title}》并等待模型响应",
+                        paper_id=paper_id, title=title, total=total,
+                        agent="llm_research_analyst", synthetic=run.mode == "demo",
+                    ):
+                        value = await self.summarize(run.idea, by_id[paper_id],
+                                                     settings=self._settings_for(run),
+                                                     llm=_AnalysisClient(self._model(), self._llm_gate))
                 except Exception as exc:
                     value = PaperSummary(paper_id=paper_id, summary_scope="failed",
                                          errors=[_failure(exc, "summarize", paper_id)])
@@ -947,7 +1066,13 @@ class ResearchPipeline:
                 and bool(summary.deep_analysis.strip())
                 for summary in run.summaries
             )
-            run.metrics["analysis_strategy"] = "direct_paper_reports"
+            run.metrics["analysis_strategy"] = (
+                "grounded_fulltext" if any(p.metadata.get("research_audit", {}).get("strategy") == "grounded_fulltext"
+                                          for p in by_id.values()) else
+                "evidence_context" if any(p.metadata.get("research_audit", {}).get("strategy") == "evidence_context"
+                                         for p in by_id.values()) else
+                "section_map_reduce" if any(p.metadata.get("research_audit", {}).get("strategy") == "section_map_reduce"
+                                             for p in by_id.values()) else "direct_paper_reports")
             run.metrics["paper_analysis"] = {
                 paper_id: dict(paper.metadata["research_audit"])
                 for paper_id, paper in by_id.items()
@@ -981,13 +1106,17 @@ class ResearchPipeline:
                             for summary in run.summaries
                             if summary.summary_scope != "failed" and self._summary_has_content(summary)],
             }
+            report_options = {}
+            if self.report is generate_report:
+                report_options["audit"] = run.metrics["report_generation"] = {}
             try:
                 async with self._llm_gate:
                     async with self._activity(run_id, "research_report",
                                               f"正在基于 {available_count}/{len(run.summaries)} 份可用笔记生成综合报告并等待模型响应",
                                               agent="llm_research_analyst", synthetic=run.mode == "demo"):
                         run.report = await self.report(run.idea, run.summaries,
-                                                        settings=self._settings_for(run), llm=self._model())
+                                                        settings=self._settings_for(run), llm=self._model(),
+                                                        **report_options)
                 _add_errors(run, run.report.errors)
             except Exception as exc:
                 run.errors.append(_failure(exc, "report"))
@@ -1021,13 +1150,15 @@ class ResearchPipeline:
                         and len(run.selected_papers) == run.top_k
                         and not run.metrics.get("selector_degraded")
                         and not run.metrics.get("query_degraded")
-                        and all(run.metrics["source_success"].get(source, False) for source in self.searchers))
+                        and all(run.metrics["source_success"].get(source, False)
+                                for source in run.metrics.get("required_sources", ["arxiv", "openalex"])))
             if run.mode == "demo":
                 complete = complete and len(run.summaries) == run.top_k and all(s.summary_scope == "demo_fixture" for s in run.summaries)
             else:
                 complete = (complete and run.metrics.get("fulltext_summary_count", 0) == run.top_k
                             and run.metrics["llm_usage"].get("requests", 0) > 0
-                            and all(run.metrics["source_requests"].get(source, 0) > 0 for source in self.searchers)
+                            and all(run.metrics["source_requests"].get(source, 0) > 0
+                                    for source in run.metrics.get("required_sources", ["arxiv", "openalex"]))
                             and not any(p.metadata.get("synthetic") or p.fulltext_quality.get("synthetic")
                                         for p in run.papers if p.paper_id in run.metrics["analysis_paper_ids"]))
             run.metrics["processing_complete"] = bool(

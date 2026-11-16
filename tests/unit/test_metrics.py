@@ -46,6 +46,17 @@ def test_completed_label_without_fulltexts_is_not_success():
     assert row["missing_fulltext_count"] == 5
 
 
+def test_current_paper_reports_are_evaluated_without_legacy_fields(tmp_path):
+    run = complete_run(tmp_path)
+    for summary in run.summaries:
+        summary.research_question = summary.core_idea = ""
+        summary.overview = "Current report overview"
+        summary.deep_analysis = "Current report body"
+    assert evaluate_result(run)["complete_success"] is True
+    run.summaries[0].deep_analysis = ""
+    assert evaluate_result(run)["complete_success"] is False
+
+
 def test_complete_success_requires_online_sources_and_physical_model_requests(tmp_path):
     run = complete_run(tmp_path)
     assert evaluate_result(run)["complete_success"] is True

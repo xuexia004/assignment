@@ -48,11 +48,13 @@ def evaluate_result(result: PipelineResult, *, elapsed_seconds: float | None = N
     fulltext_summary_ids = {
         summary.paper_id for summary in result.summaries
         if summary.summary_scope == "fulltext" and not summary.errors
-        and summary.research_question.strip() and summary.core_idea.strip()
+        and ((summary.overview.strip() and summary.deep_analysis.strip())
+             or (summary.research_question.strip() and summary.core_idea.strip()))
         and summary.paper_id in fulltext_ids and _file(summary.summary_path)
     }
     usable = {summary.paper_id for summary in result.summaries
-              if summary.summary_scope != "failed" and summary.research_question.strip()}
+              if summary.summary_scope != "failed" and (summary.research_question.strip()
+                 or (summary.overview.strip() and summary.deep_analysis.strip()))}
     report = result.report
     references = [reference.paper_id for reference in report.references] if report else []
     report_valid = bool(

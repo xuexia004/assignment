@@ -35,7 +35,7 @@ from paper_agent.api_bridge import (
     redact_secrets,
     resolve_artifact,
 )
-from paper_agent.config import Settings
+from paper_agent.config import RESEARCH_PROFILES, Settings
 from paper_agent.conversations import ConversationStore, discussion_messages
 from paper_agent.llm_client import ChatClient, LLMError, LLMOutputError
 from paper_agent.models import DeliveryStatus, Paper, PipelineResult
@@ -207,8 +207,15 @@ class Workbench:
 
     def settings(self) -> Settings:
         values = self.preferences
+        method_values = ({key: values[key] for key in (
+            "crossref_enabled", "cross_encoder_enabled", "pdf_parser", "paper_analysis_strategy"
+        ) if key in values} if values.get("research_profile") == "custom" else {})
         return replace(
             self.base, mode="live", ranker="semantic",
+            **method_values,
+            report_strategy=values.get("report_strategy", self.base.report_strategy),
+            research_profile=(values.get("research_profile") if isinstance(values.get("research_profile"), str) and values.get("research_profile") in RESEARCH_PROFILES
+                              else self.base.research_profile),
             llm_base_url=values.get("base_url", self.base.llm_base_url),
             llm_model=values.get("model", self.base.llm_model),
             llm_api_key=values.get("api_key", self.base.llm_api_key),
@@ -223,6 +230,7 @@ class Workbench:
             llm_concurrency=values.get("concurrency", self.base.llm_concurrency),
             llm_timeout=values.get("llm_timeout", self.base.llm_timeout),
             http_timeout=values.get("http_timeout", self.base.http_timeout),
+            **{key: values.get(key, getattr(self.base, key)) for key in ("download_candidate_timeout", "download_timeout", "fulltext_timeout")},
         )
 
     def public_config(self) -> dict:
@@ -236,18 +244,50 @@ class Workbench:
             "default_execution_mode": "auto",
             "concurrency": settings.concurrency, "llm_timeout": settings.llm_timeout,
             "http_timeout": settings.http_timeout,
+            **{key: getattr(settings, key) for key in ("download_candidate_timeout", "download_timeout", "fulltext_timeout")},
+            "research_profile": settings.research_profile,
+            "report_strategy": settings.report_strategy,
+            **{key: getattr(settings, key) for key in (
+                "crossref_enabled", "cross_encoder_enabled", "pdf_parser", "paper_analysis_strategy")},
         }
 
     def save_config(self, values: dict) -> dict:
         allowed = {"base_url", "model", "api_key", "clear_api_key", "http_proxy", "thinking_enabled",
                    "default_top_k", "concurrency", "llm_timeout", "http_timeout",
                    "openalex_api_key", "clear_openalex_api_key"}
+        allowed.update({"research_profile", "report_strategy"})
+        allowed.update({"download_candidate_timeout", "download_timeout", "fulltext_timeout"})
+        method_keys = {"crossref_enabled", "cross_encoder_enabled", "pdf_parser", "paper_analysis_strategy"}
+        allowed.update(method_keys)
         if set(values) - allowed:
             raise UIError("模型设置包含不支持的字段。")
         updated = dict(self.preferences)
+        if "report_strategy" in values:
+            if not isinstance(values["report_strategy"], str) or values["report_strategy"] not in {"legacy", "structured"}:
+                raise UIError("综合报告方法不正确。")
+            updated["report_strategy"] = values["report_strategy"]
+        if method_keys.intersection(values) or values.get("research_profile") == "custom":
+            if values.get("research_profile", "custom") != "custom":
+                raise UIError("单项开关不能与预设档位同时修改。")
+            effective = self.settings()
+            for key in method_keys:
+                value = values.get(key, getattr(effective, key))
+                valid = (type(value) is bool if key.endswith("_enabled") else
+                         isinstance(value, str) and value in (
+                             {"legacy", "layout"} if key == "pdf_parser" else
+                             {"direct", "sections", "evidence", "evidence_fast", "grounded"}))
+                if not valid:
+                    raise UIError("研究方法开关的格式不正确。")
+                updated[key] = value
+            updated["research_profile"] = "custom"
+        if "research_profile" in values:
+            if not isinstance(values["research_profile"], str) or values["research_profile"] not in RESEARCH_PROFILES:
+                raise UIError("研究对照配置不正确。")
+            updated["research_profile"] = values["research_profile"]
         for key, low, high in (("default_top_k", 1, 15),
                                ("concurrency", 1, 8), ("llm_timeout", 5, 600),
-                               ("http_timeout", 5, 300)):
+                               ("http_timeout", 5, 300), ("download_candidate_timeout", 5, 600),
+                               ("download_timeout", 5, 1800), ("fulltext_timeout", 5, 1200)):
             if key in values:
                 value = values[key]
                 if (isinstance(value, bool) or not isinstance(value, (int, float))
@@ -734,11 +774,12 @@ class Workbench:
                "created_at": timestamp, "updated_at": timestamp, "run_id": None,
                "result": None, "events": [], "error": None, "artifacts": [],
                "_output_dir": str(settings.output_dir.resolve()), "_event_seq": 0}
+        job["_experiment_snapshot"] = settings.experiment_snapshot(top_k=top_k)
         self.jobs[job_id] = job
         session["job_ids"].append(job_id)
         if len(session["job_ids"]) == 1 and session["title"] == "新研究":
             session["title"] = idea.strip()[:36]
-        self.event(job, "status", message="研究任务已加入队列。", data={"status": "pending"})
+        self.event(job, "status", message="研究任务已加入队列。", data={"status": "pending", "research_profile": settings.research_profile})
         self.tasks[job_id] = asyncio.create_task(self._execute(job, settings))
         return self.public_job(job)
 

@@ -19,6 +19,7 @@ export function RankingSummary({ result }: { result: PipelineResult }) {
   if (!ranking) return null;
   const fellBack = ranking.requested === 'semantic' && ranking.actual !== 'semantic';
   const semantic = ranking.actual === 'semantic';
+  const valueRanking = result.metrics?.ranking as { value_ranking?: { applied?: boolean }; cross_encoder?: { applied?: boolean } } | undefined;
   return <section className={`ranking-summary ${fellBack ? 'is-fallback' : ''}`} aria-label="本次排序方式">
     <div className="ranking-summary-head">
       <span className="ranking-summary-icon"><GitMerge size={14}/></span>
@@ -32,6 +33,8 @@ export function RankingSummary({ result }: { result: PipelineResult }) {
       {ranking.modelName && <span>模型 <strong>{shortModelName(ranking.modelName)}</strong></span>}
     </div>
     {semantic && <p className="ranking-note"><Info size={12}/>关键词名次与 Sentence-BERT 语义名次按 0.5/(60+rank) 融合；RRF 分数不是概率。展开论文可查看各自名次。</p>}
+    {valueRanking?.value_ranking?.applied && <p className="ranking-note"><Info size={12}/>已在高相关候选内结合规范化引用影响、发表年份和内容互补性调整顺序；参考价值信号不代表论文结论正确。</p>}
+    {valueRanking?.cross_encoder?.applied && <p className="ranking-note"><Info size={12}/>已对原前20篇进行查询与论文联合重排，保留候选集合；联合分数不是概率或论文质量判断。</p>}
   </section>;
 }
 

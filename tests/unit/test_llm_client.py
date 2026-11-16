@@ -134,3 +134,22 @@ def test_tool_calls_preserved_and_request_budget_shared():
                 await llm.chat([{"role": "user", "content": "more"}])
             assert llm.usage.requests == 1
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter"])
+def test_truncated_and_filtered_responses_remain_rejected_but_distinguishable(finish_reason):
+    async def run():
+        body = completion('{"private":"unusable fragment"}')
+        body["choices"][0]["finish_reason"] = finish_reason
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+        ) as http:
+            llm = ChatClient(settings(), client=http)
+            with pytest.raises(LLMOutputError) as failure:
+                await llm.json("s", "u")
+            assert failure.value.reason == "output_truncated"
+            assert failure.value.finish_reason == finish_reason
+            assert llm.usage.requests == 1 and llm.usage.completion_tokens == 4
+            assert llm.call_log[0]["finish_reason"] == finish_reason
+            assert "unusable fragment" not in repr(llm.call_log)
+    asyncio.run(run())

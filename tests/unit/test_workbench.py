@@ -58,6 +58,29 @@ def test_artifact_names_are_safe_for_desktop_open_export():
     assert len(Workbench._artifact_name("x" * 300, ".md")) <= 143
 
 
+def test_saved_profile_does_not_change_already_submitted_job_settings(tmp_path):
+    observed = []
+    async def runner(job, settings, progress):
+        observed.append(settings.experiment_snapshot(top_k=job["top_k"]))
+        return await _runner(job, settings, progress)
+
+    async def scenario():
+        bench = Workbench(Settings(data_dir=tmp_path / "data"), root=tmp_path / "web", research_runner=runner)
+        assert bench.save_config({"research_profile": "baseline"})["research_profile"] == "baseline"
+        session = bench.create_session()
+        job = bench.submit(session["session_id"], {"idea": "agent memory", "top_k": 3, "mode": "demo"})
+        bench.save_config({"research_profile": "enhanced"})
+        await bench.tasks[job["job_id"]]
+        assert observed[0]["profile"] == "baseline"
+        assert bench.jobs[job["job_id"]]["_experiment_snapshot"] == observed[0]
+        assert bench.settings().cross_encoder_enabled and bench.settings().pdf_parser == "layout"
+        assert Workbench(bench.base, root=bench.root).public_config()["research_profile"] == "enhanced"
+        with pytest.raises(Exception, match="对照配置"):
+            bench.save_config({"research_profile": "unknown"})
+
+    asyncio.run(scenario())
+
+
 def test_sync_run_reads_trace_before_run_json_exists(tmp_path):
     async def scenario() -> dict:
         settings = Settings(output_dir=tmp_path / "runs", data_dir=tmp_path / "data")
@@ -227,3 +250,122 @@ def test_persistence_failure_still_releases_the_job_slot(tmp_path, monkeypatch):
     job, bench = asyncio.run(scenario())
     assert job["status"] == "completed"
     assert not bench.tasks
+
+
+def test_independent_method_controls_preserve_other_options_and_submitted_job(tmp_path):
+    from paper_agent.main_agent import server_environment
+    from paper_agent.web import UIError
+
+    async def scenario():
+        bench = Workbench(Settings(data_dir=tmp_path / "data"), root=tmp_path / "web", research_runner=_runner)
+        bench.save_config({"research_profile": "enhanced"})
+        first = bench.save_config({"crossref_enabled": False})
+        assert first["research_profile"] == "custom"
+        assert first["cross_encoder_enabled"] and first["pdf_parser"] == "layout"
+        assert first["paper_analysis_strategy"] == "direct"
+        bench.save_config({"paper_analysis_strategy": "grounded"})
+        settings = bench.settings()
+        assert server_environment(settings)["PAPER_AGENT_PAPER_ANALYSIS_STRATEGY"] == "grounded"
+        session = bench.create_session()
+        job = bench.submit(session["session_id"], {"idea": "agent memory", "top_k": 3, "mode": "demo"})
+        snapshot = dict(bench.jobs[job["job_id"]]["_experiment_snapshot"])
+        bench.save_config({"cross_encoder_enabled": False})
+        await bench.tasks[job["job_id"]]
+        assert bench.jobs[job["job_id"]]["_experiment_snapshot"] == snapshot
+        assert snapshot["config"]["cross_encoder_enabled"] is True
+        loaded = Workbench(bench.base, root=bench.root)
+        assert loaded.settings().paper_analysis_strategy == "grounded"
+        assert not loaded.settings().cross_encoder_enabled
+        before = loaded.public_config()
+        for bad in ({"crossref_enabled": "false"}, {"pdf_parser": "unknown"},
+                    {"paper_analysis_strategy": ["grounded"]},
+                    {"research_profile": "enhanced", "crossref_enabled": False}):
+            with pytest.raises(UIError):
+                loaded.save_config(bad)
+            assert loaded.public_config() == before
+        loaded.save_config({"research_profile": "baseline"})
+        assert loaded.settings().paper_analysis_strategy == "direct"
+        assert not loaded.settings().crossref_enabled
+    asyncio.run(scenario())
+
+
+def test_report_strategy_persists_independently_and_freezes_submitted_jobs(tmp_path):
+    from paper_agent.main_agent import server_environment
+    from paper_agent.web import UIError
+
+    async def scenario():
+        observed = []
+
+        async def runner(job, settings, progress):
+            observed.append(settings.report_strategy)
+            return await _runner(job, settings, progress)
+
+        bench = Workbench(Settings(data_dir=tmp_path / "data", report_strategy="legacy"),
+                          root=tmp_path / "web", research_runner=runner)
+        assert bench.public_config()["report_strategy"] == "legacy"
+        bench.save_config({"research_profile": "grounded"})
+        before = bench.public_config()
+        changed = bench.save_config({"report_strategy": "structured"})
+        assert {key: value for key, value in changed.items() if key != "report_strategy"} == {
+            key: value for key, value in before.items() if key != "report_strategy"
+        }
+        assert server_environment(bench.settings())["PAPER_AGENT_REPORT_STRATEGY"] == "structured"
+        reloaded = Workbench(bench.base, root=bench.root)
+        assert reloaded.public_config()["report_strategy"] == "structured"
+        reloaded.save_config({"research_profile": "baseline"})
+        assert reloaded.settings().report_strategy == "structured"
+        assert reloaded.settings().paper_analysis_strategy == "direct"
+        session = bench.create_session()
+        job = bench.submit(session["session_id"], {"idea": "agent memory", "top_k": 3, "mode": "demo"})
+        snapshot = dict(bench.jobs[job["job_id"]]["_experiment_snapshot"])
+        bench.save_config({"report_strategy": "legacy"})
+        await bench.tasks[job["job_id"]]
+        assert observed == ["structured"]
+        assert bench.jobs[job["job_id"]]["_experiment_snapshot"] == snapshot
+        assert snapshot["config"]["report_strategy"] == "structured"
+        assert bench.settings().report_strategy == "legacy"
+        before = bench.public_config()
+        for value in ("other", True, ["structured"], None, 1):
+            with pytest.raises(UIError):
+                bench.save_config({"report_strategy": value})
+            assert bench.public_config() == before
+
+    asyncio.run(scenario())
+
+
+def test_timeout_budgets_persist_propagate_and_freeze(tmp_path):
+    from paper_agent.main_agent import server_environment
+    from paper_agent.web import UIError
+    observed = []
+
+    async def runner(job, settings, progress):
+        observed.append(settings.fulltext_timeout)
+        return await _runner(job, settings, progress)
+
+    async def scenario():
+        base = Settings(data_dir=tmp_path / "data", output_dir=tmp_path / "runs")
+        options = dict(root=tmp_path / "web", config_path=tmp_path / "config.json", research_runner=runner)
+        bench = Workbench(base, **options)
+        defaults = {"download_candidate_timeout": 45, "download_timeout": 180, "fulltext_timeout": 180}
+        slow = {"download_candidate_timeout": 90, "download_timeout": 240, "fulltext_timeout": 600}
+        assert all(bench.public_config()[k] == v for k, v in defaults.items())
+        bench.save_config(slow)
+        reloaded = Workbench(base, **options)
+        assert all(reloaded.public_config()[k] == v for k, v in slow.items())
+        env = server_environment(bench.settings())
+        assert float(env["PAPER_AGENT_DOWNLOAD_CANDIDATE_TIMEOUT"]) == 90
+        assert float(env["PAPER_AGENT_DOWNLOAD_TIMEOUT"]) == 240
+        assert float(env["PAPER_AGENT_FULLTEXT_TIMEOUT"]) == 600
+        for key in slow:
+            for invalid in [True, "90", 0, float("nan"), float("inf"), 99999]:
+                with pytest.raises(UIError):
+                    bench.save_config({key: invalid})
+                assert bench.public_config()[key] == slow[key]
+        session = bench.create_session()
+        job = bench.submit(session["session_id"], {"idea": "timeout fixture", "top_k": 3, "mode": "demo"})
+        bench.save_config(defaults)
+        await bench.tasks[job["job_id"]]
+        assert observed == [600]
+        snapshot = bench.jobs[job["job_id"]]["_experiment_snapshot"]["config"]
+        assert all(snapshot[k] == v for k, v in slow.items())
+    asyncio.run(scenario())

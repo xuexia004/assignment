@@ -144,7 +144,7 @@ def test_pipeline_passes_top_k_and_independent_candidate_pool_to_selector(
 
         pipeline = ResearchPipeline(
             Settings(
-                mode="live", top_k=k, candidate_limit=10, ranker="keyword",
+                mode="live", top_k=k, candidate_limit=10, ranker="keyword", crossref_enabled=False,
                 output_dir=tmp_path / "runs", data_dir=tmp_path / "files",
             ),
             llm=object(), selector_fn=recording_selector,
@@ -194,6 +194,7 @@ def test_semantic_order_determines_top_twenty_and_retains_all_for_pdf_fallback(t
     async def scenario():
         pipeline = ResearchPipeline(
             Settings(mode="live", ranker="semantic", candidate_limit=3, merged_candidate_limit=3,
+                     crossref_enabled=False,
                      output_dir=tmp_path / "runs", data_dir=tmp_path / "files"),
             llm=object(), selector_fn=selector, search_arxiv_fn=source, search_openalex_fn=empty,
         )

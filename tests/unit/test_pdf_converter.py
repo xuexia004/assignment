@@ -73,6 +73,8 @@ def test_real_pymupdf4llm_preserves_text_and_exact_page_provenance(tmp_path):
     assert quality["ocr_enabled"] is False
     assert quality["semantic_completeness"] == "not_assessed"
     assert quality["formula_table_layout_verified"] is False
+    assert result.metadata["conversion"]["parser"] == "pymupdf4llm.layout"
+    assert result.metadata["conversion"]["fallback_error_type"] is None
     markdown = Path(result.markdown_path).read_text(encoding="utf-8")
     assert all(word in markdown for word in ["Abstract", "Methods", "References", "reproducible"])
     assert Path(result.markdown_path).parent == (tmp_path / "data" / "markdown")
@@ -83,6 +85,37 @@ def test_real_pymupdf4llm_preserves_text_and_exact_page_provenance(tmp_path):
         assert markdown[mapping.start_char:mapping.end_char] == mapping.text
     assert not list(Path(result.markdown_path).parent.glob("*.tmp"))
     assert "语义完整" in quality["warnings"][0]
+
+
+def test_layout_failure_uses_legacy_without_losing_text_or_misreporting_parser(tmp_path, monkeypatch):
+    from paper_agent.services import pdf_converter
+
+    def fail(document):
+        raise RuntimeError("Simulated layout failure")
+
+    monkeypatch.setattr(pdf_converter, "_layout_parser", fail)
+    path = make_pdf(tmp_path)
+    result = convert(tmp_path, record(path))
+    assert result.status == "converted" and BODY.split()[0] in Path(result.markdown_path).read_text(encoding="utf-8")
+    assert result.metadata["conversion"]["parser"] == "pymupdf4llm.legacy"
+    assert result.metadata["conversion"]["requested_parser"] == "layout"
+    assert result.metadata["conversion"]["fallback_error_type"] == "RuntimeError"
+    assert any("版面解析失败" in w for w in result.fulltext_quality["warnings"])
+
+
+def test_legacy_setting_selects_existing_parser(tmp_path):
+    result = asyncio.run(convert_pdf(record(make_pdf(tmp_path)), settings=Settings(data_dir=tmp_path, pdf_parser="legacy")))
+    assert result.metadata["conversion"]["parser"] == "pymupdf4llm.legacy"
+    assert result.conversion_status == "converted"
+
+
+def test_disabled_layout_dispatcher_is_not_misreported_as_layout(tmp_path, monkeypatch):
+    import pymupdf4llm
+
+    monkeypatch.setattr(pymupdf4llm, "_use_layout", False)
+    result = convert(tmp_path, record(make_pdf(tmp_path)))
+    assert result.metadata["conversion"]["parser"] == "pymupdf4llm.legacy"
+    assert result.metadata["conversion"]["fallback_error_type"] == "PDFConversionError"
 
 
 def test_real_table_keeps_cell_text_and_markdown_columns(tmp_path):
@@ -155,6 +188,53 @@ def test_failed_refresh_preserves_readable_markdown_and_its_mapping(tmp_path):
         f"markdown:{original.paper_id}".encode("utf-8")
     ).hexdigest()[:20]
     assert markdown_path.read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize("identity_source", ["paper_fields", "download_audit", "ambiguous_urls"])
+def test_revision_markdown_and_offsets_stay_independent_in_shared_directory(tmp_path, identity_source):
+    results = []
+    first_bytes = None
+    for version, text in [("v1", BODY), ("v2", "Updated revision with additional details. " + BODY)]:
+        folder = tmp_path / version
+        folder.mkdir()
+        path = make_pdf(folder, [text])
+        paper = Paper(paper_id="arxiv:2601.01234", title="Revision fixture", arxiv_id="2601.01234",
+                      arxiv_version=version, pdf_path=str(path))
+        if identity_source == "download_audit":
+            # The acquired revision wins over fields subsequently edited by a caller.
+            paper.arxiv_version = "v99"
+            paper.metadata["downloads"] = {
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "cache_identity": {"paper_id": paper.paper_id, "arxiv_id": paper.arxiv_id,
+                                   "arxiv_version": version},
+            }
+        elif identity_source == "ambiguous_urls":
+            paper.arxiv_version = None
+            paper.pdf_urls = ["https://arxiv.org/pdf/2601.01234v1",
+                              "https://arxiv.org/pdf/2601.01234v2"]
+        result = convert(tmp_path, paper, lambda document: [
+            {"metadata": {"page": 1}, "text": document[0].get_text("text")},
+        ])
+        assert result.status == "converted"
+        results.append(result)
+        if first_bytes is None:
+            first_bytes = Path(result.markdown_path).read_bytes()
+    first, second = results
+    assert first.markdown_path != second.markdown_path
+    assert Path(first.markdown_path).read_bytes() == first_bytes
+    assert first.page_map[0].end_char != second.page_map[0].end_char
+    for result in results:
+        markdown = Path(result.markdown_path).read_text(encoding="utf-8")
+        assert all(markdown[item.start_char:item.end_char] == item.text for item in result.page_map)
+    assert "Updated revision" not in first_bytes.decode("utf-8")
+    assert "Updated revision" in Path(second.markdown_path).read_text(encoding="utf-8")
+    unversioned = Paper(paper_id=first.paper_id, title=first.title, arxiv_id=first.arxiv_id,
+                        pdf_path=first.pdf_path)
+    legacy = convert(tmp_path, unversioned, lambda document: [
+        {"metadata": {"page": 1}, "text": document[0].get_text("text")},
+    ])
+    assert Path(legacy.markdown_path).name == hashlib.sha256(legacy.paper_id.encode()).hexdigest() + ".md"
+    assert Path(first.markdown_path).read_bytes() == first_bytes
 
 
 def test_password_pdf_is_explicit_failure(tmp_path):

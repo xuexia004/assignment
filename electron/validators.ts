@@ -11,12 +11,15 @@ import type {
   SendMessage,
   ServiceInfo,
 } from '../shared/contracts';
+import { RESEARCH_PROFILES } from '../shared/contracts';
 
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const CONFIG_KEYS = new Set<keyof ConfigUpdate>([
   'base_url', 'model', 'api_key', 'clear_api_key', 'openalex_api_key',
   'clear_openalex_api_key', 'thinking_enabled', 'http_proxy', 'default_top_k',
-  'concurrency', 'llm_timeout', 'http_timeout',
+  'concurrency', 'llm_timeout', 'http_timeout', 'research_profile',
+  'download_candidate_timeout', 'download_timeout', 'fulltext_timeout',
+  'crossref_enabled', 'cross_encoder_enabled', 'pdf_parser', 'paper_analysis_strategy', 'report_strategy',
 ]);
 const STRING_LIMITS: Partial<Record<keyof ConfigUpdate, number>> = {
   base_url: 4096, model: 200, api_key: 4096, openalex_api_key: 4096, http_proxy: 4096,
@@ -99,6 +102,17 @@ export function validateConfigUpdate(value: unknown): ConfigUpdate {
   for (const [rawKey, rawValue] of Object.entries(input)) {
     if (!CONFIG_KEYS.has(rawKey as keyof ConfigUpdate)) continue;
     const key = rawKey as keyof ConfigUpdate;
+    if (key === 'pdf_parser' || key === 'paper_analysis_strategy' || key === 'report_strategy') {
+      const choices = key === 'pdf_parser' ? ['legacy', 'layout'] : key === 'report_strategy' ? ['legacy', 'structured'] : ['direct', 'sections', 'evidence', 'evidence_fast', 'grounded'];
+      if (typeof rawValue !== 'string' || !choices.includes(rawValue)) throw new InputError('研究方法不正确。');
+      result[key] = rawValue;
+      continue;
+    }
+    if (key === 'research_profile') {
+      if (!RESEARCH_PROFILES.includes(rawValue as typeof RESEARCH_PROFILES[number])) throw new InputError('研究对照配置不正确。');
+      result[key] = rawValue;
+      continue;
+    }
     const max = STRING_LIMITS[key];
     if (max !== undefined) {
       const text = boundedString(rawValue, key, max, key === 'api_key' || key === 'openalex_api_key' || key === 'http_proxy');
@@ -114,6 +128,9 @@ export function validateConfigUpdate(value: unknown): ConfigUpdate {
     if (key === 'default_top_k') result[key] = finiteNumber(rawValue, key, 1, 15, true);
     else if (key === 'concurrency') result[key] = finiteNumber(rawValue, key, 1, 8, true);
     else if (key === 'llm_timeout') result[key] = finiteNumber(rawValue, key, 5, 600);
+    else if (key === 'download_candidate_timeout') result[key] = finiteNumber(rawValue, key, 5, 600);
+    else if (key === 'download_timeout') result[key] = finiteNumber(rawValue, key, 5, 1800);
+    else if (key === 'fulltext_timeout') result[key] = finiteNumber(rawValue, key, 5, 1200);
     else if (key === 'http_timeout') result[key] = finiteNumber(rawValue, key, 5, 300);
     else result[key] = boolean(rawValue, key);
   }
@@ -198,6 +215,13 @@ export function validateServiceInfo(value: unknown): ServiceInfo {
 
 export function validatePublicConfig(value: unknown): PublicConfig {
   const input = object(value, '模型设置');
+  const methods = validateConfigUpdate(Object.fromEntries(
+    ['crossref_enabled', 'cross_encoder_enabled', 'pdf_parser', 'paper_analysis_strategy', 'report_strategy',
+      'download_candidate_timeout', 'download_timeout', 'fulltext_timeout']
+      .filter(key => input[key] !== undefined).map(key => [key, input[key]])));
+  if (input.research_profile !== undefined && !RESEARCH_PROFILES.includes(input.research_profile as typeof RESEARCH_PROFILES[number])) {
+    throw new InputError('研究对照配置不正确。');
+  }
   if (typeof input.provider !== 'string' || typeof input.base_url !== 'string' ||
       typeof input.model !== 'string' || typeof input.api_key_configured !== 'boolean' ||
       typeof input.openalex_api_key_configured !== 'boolean' || typeof input.thinking_enabled !== 'boolean' ||
@@ -209,6 +233,8 @@ export function validatePublicConfig(value: unknown): PublicConfig {
   }
   return {
     provider: input.provider, base_url: input.base_url, model: input.model,
+    ...methods,
+    research_profile: (input.research_profile ?? 'current') as PublicConfig['research_profile'],
     api_key_configured: input.api_key_configured,
     openalex_api_key_configured: input.openalex_api_key_configured,
     thinking_enabled: input.thinking_enabled, http_proxy: input.http_proxy,

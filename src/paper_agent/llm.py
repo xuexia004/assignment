@@ -26,9 +26,11 @@ class LLMBudgetError(LLMError):
 class LLMOutputError(LLMError):
     """A sanitized output problem with a stable machine-readable reason."""
 
-    def __init__(self, message: str, *, reason: str = "invalid_output"):
+    def __init__(self, message: str, *, reason: str = "invalid_output",
+                 finish_reason: str | None = None):
         super().__init__(message)
         self.reason = reason
+        self.finish_reason = finish_reason
 
 
 @dataclass
@@ -222,9 +224,10 @@ class ChatClient:
                     self._record_tokens(body, entry)
                     try:
                         message = self._message(body)
-                    except LLMOutputError:
+                    except LLMOutputError as exc:
                         self.usage.failed_requests += 1
-                        entry["status"] = "invalid_response"
+                        entry.update(status="invalid_response", reason=exc.reason,
+                                     finish_reason=exc.finish_reason)
                         raise
                     self.usage.successful_requests += 1
                     entry["status"] = "success"
@@ -260,7 +263,7 @@ class ChatClient:
         choice = choices[0]
         if choice.get("finish_reason") in {"length", "content_filter"}:
             raise LLMOutputError("Model response was truncated or filtered",
-                                 reason="output_truncated")
+                                 reason="output_truncated", finish_reason=choice["finish_reason"])
         message = choice.get("message")
         if not isinstance(message, dict):
             raise LLMOutputError("Model endpoint returned no assistant message",

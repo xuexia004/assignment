@@ -2,6 +2,49 @@
 
 All notable changes to Paper Agent are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Independent `legacy`/`structured` report generation, defaulting to structured output rendered locally without duplicating the entire report in model output. Preserve complete input notes and strict references; allow at most one bounded format/length recovery. Final three paired fixed-note trials produced 3/3 valid reports versus 0/3 legacy, at median 9.27 versus 22.81 seconds; this is report availability, not semantic accuracy or end-to-end speed. See `docs/综合报告修复与对照实验_20261116.md`.
+- Download/fulltext budget controls with default (45/180/180 seconds), slow-network (90/240/600 seconds) and explicit custom choices. Edits become effective for new tasks after saving; existing task snapshots retain their settings. Keep rank-ordered batch replacement as the production strategy.
+- Independent source, candidate-ranking, PDF-parser and single-paper-analysis controls, preserving compatible CLI profiles and recorded baselines. Custom timeout persistence and preset switching are covered through the actual desktop bridge.
+- Optional `grounded` profile: retain the entire supplied source, insert paragraph locators and request evidence before the answer in one call, with exact quote checks and unchanged acquisition scope. Engineering checks pass; live quality validation is pending because initial generation requests failed with provider HTTP 500. Keep existing profiles and defaults.
+- Paper-disjoint, preregistered quality comparison with all QASPER annotation types, frozen prompt/code/input hashes, source-bound quote checks and a stop after three consecutive provider/network failures. Service failures remain visible and do not count as evidence of method quality.
+- An optional `evidence_fast` comparison profile using BM25 top-40 passage retrieval followed by the existing Cross-Encoder, parent recovery and source-quote validation. Preserve the whole-paper and hybrid profiles; a separate 98-paper holdout, isolated latency benchmark and 72 live QA calls record both gains and regressions.
+- An optional evidence comparison profile with local hybrid passage retrieval, parent-paragraph recovery, bounded context and exact source quote locations. QASPER held-out measurements and paired live answers retain raw inputs, model usage, negative latency results and source-scope limits.
+- Evidence output validation and original-passage recovery for valid body locators missing from the model's separate citation list, with regression and real MCP transport coverage.
+
+- Baseline, source-only, reranking-only, layout-only and combined comparison profiles in desktop settings and CLI. Capture secret-free settings/input fingerprints per task; changes apply to new tasks, and old results retain their own profile.
+- A comparison entry point that preserves frozen inputs, raw measurements and per-parser outputs in a fresh bundle, with explicit historical replay versus free local re-execution labels.
+- CPU layout-aware whole-PDF extraction using the already pinned PyMuPDF4LLM 1.28.2, preserving page provenance and whole-paper single-call analysis; explicit legacy selection and audited exception fallback remain available.
+- An open-source mechanism comparison and a reproducible local PDF parser comparison. Three public PDFs, two alternating-order pairs each, showed 56.6%, 15.4% and 21.9% lower median extraction time; this is not an end-to-end or LLM accuracy benchmark.
+- A local Cross-Encoder candidate-ranking experiment based on the existing Sentence Transformers dependency, with fixed revision, bounded candidate pool, input-window audit and baseline-preserving failures.
+- Optional free Crossref journal/conference metadata search inside the existing MCP pipeline, with independent public-pool pacing, bounded retries/timeouts and provider provenance.
+- Source health, returned counts and deduplicated exclusive-candidate counts in execution records; additive source failure does not block core-source results.
+- A public metadata validation script that uses no saved keys or LLM calls and retains observed records for reproducible comparisons.
+- Disabled-by-default reference-value reranking with normalized citation impact, publication age and MMR-style redundancy control; preserve baseline Top-k anchors and all component scores. Small candidate-stage comparisons did not demonstrate an adoption-worthy gain.
+- Disabled-by-default long-paper section analysis with complete extracted-text coverage, shared context, bounded original-context backreading and a shared request concurrency limit.
+- A reviewed live-comparison script with request reservations, persistent budget ledger, isolated strategy artifacts and overwrite protection. Scheduling fixtures are not speed or quality evidence.
+
+### Experiment decision
+
+- Cascade retrieval reduced isolated warm-model new-document preparation time by 52.8% against hybrid retrieval. New 98-paper evidence recall was 89.11% versus 88.30%, with an inconclusive paired interval. Correction: the old QA scorer omitted Unanswerable references; rescoring unchanged outputs with the official protocol gives cascade 57.81%, hybrid 60.72%, wholetext 54.02%. The earlier claim that both retrieval methods scored below wholetext is withdrawn. Repeated cached hybrid retrieval was faster. Keep this as an opt-in comparison, not a universal speed or quality claim. See `docs/级联证据检索与版本缓存实测_20261107.md`.
+- A conservative Cross-Encoder that only reorders the original Selector top 20 raised candidate nDCG@5 from 0.719 to 0.807 and 0.749 to 0.916 on two fixed 20-query sets, at about 1.5 seconds warm CPU inference. Candidate membership is preserved. This is an opt-in strategy; final LLM selection/report gains have not been measured. The earlier 40-candidate attempt and its recall tradeoff remain recorded.
+- Three fixed public extracted texts were analyzed with DeepSeek Flash using 15 successful requests: section analysis was 29–51% slower and used 1.75 times the aggregate provider-reported tokens. One pair per paper is a pilot, not an end-to-end benchmark. Manual text checks also found a new parameter conflation and processing details in a section report; retain direct analysis by default and stop further paid repetitions.
+
+### Fixed
+
+- Exclude arXiv source-gate queueing from the per-address download timer while retaining the per-paper and whole-stage limits. Preserve timeout reasons and partial-download byte diagnostics.
+- Preserve every QASPER answer annotation, including Unanswerable, in a shared official-protocol scorer. Rescore historical saved outputs into new artifacts without replacing raw answers or legacy measurements; verify normalization and annotation precedence against the official evaluator.
+- Isolate explicit arXiv versions in verified PDF caches and standalone Markdown output; reject known version mismatches across redirects. Cached author-keyword extraction uses the same identity and verifies versioned manifests/hashes. Detach known stale revision-derived paths and keywords from returned copies while preserving historical files and unversioned compatibility.
+- Keep converted Markdown inside each run so baseline and layout experiments on the same paper cannot overwrite earlier artifacts; reject continuing a new-format staged run with changed controls.
+- Use paragraph boundaries when section-analysis inputs have no Markdown headings; retain complete character coverage and keep the experimental strategy disabled by default.
+- Keep settings paths within the resizable panel; retain the full-path tooltip and add keyboard-accessible expansion.
+- Continue ordered replacements when a PDF has no readable converted body; retain partial bodies, original selections, artifacts and errors.
+- Bound replacement attempts (automatic default: twice Top-k) and the whole fulltext stage (default: 180 seconds), with per-paper checkpoints and explicit timeout records.
+- Evaluate current paper-report bodies without requiring obsolete summary fields; keep legacy records compatible.
+
 ## [1.0.0] - 2026-11-02
 
 ### Added

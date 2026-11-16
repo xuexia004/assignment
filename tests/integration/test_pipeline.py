@@ -36,6 +36,39 @@ def test_demo_runs_both_task_agents_and_persists_scopes(tmp_path):
     assert {timing.stage for timing in result.timings} == {"search", "selection", "fulltexts", "summarize", "report", "total"}
 
 
+def test_optional_joint_reranking_keeps_selector_set_and_reserve_tail(tmp_path, monkeypatch):
+    from paper_agent.agents.selector_agent import build_selection_payload
+    from paper_agent.models import Paper
+    from paper_agent.services import cross_encoder_reranker
+
+    # Explicitly synthetic retrieval/ranking signals; no network, model or quality claim.
+    async def source(query, limit, *, settings, client=None):
+        return [Paper(paper_id=f"fixture:{i}", title=f"Agent memory fixture {i}",
+                      abstract=f"Complete synthetic abstract {i} about agent memory.", sources=["arxiv"])
+                for i in range(30)]
+
+    async def empty(query, limit, *, settings, client=None):
+        return []
+
+    monkeypatch.setattr(cross_encoder_reranker, "_predict", lambda q, pool: (list(range(len(pool))), []))
+    async def scenario():
+        settings = settings_for(tmp_path, mode="live", ranker="keyword", crossref_enabled=False, source_limit=30)
+        baseline = await ResearchPipeline(settings, search_arxiv_fn=source, search_openalex_fn=empty).search_papers("agent memory", 3, "agent memory")
+        enabled = replace(settings, cross_encoder_enabled=True)
+        ranked = await ResearchPipeline(enabled, search_arxiv_fn=source, search_openalex_fn=empty).search_papers("agent memory", 3, "agent memory")
+        return baseline, ranked, enabled
+
+    baseline, ranked, settings = asyncio.run(scenario())
+    assert len(baseline.papers) == len(ranked.papers) == 30
+    assert [p.paper_id for p in ranked.papers[:20]] == [p.paper_id for p in reversed(baseline.papers[:20])]
+    assert [p.paper_id for p in ranked.papers[20:]] == [p.paper_id for p in baseline.papers[20:]]
+    assert ranked.metrics["ranking"]["cross_encoder"]["applied"]
+    assert ranked.metrics["comparison_inputs"] == baseline.metrics["comparison_inputs"]
+    payload, _ = build_selection_payload("agent memory", ranked.papers[:20], 3, settings)
+    assert payload["candidates"][0]["abstract"] == ranked.papers[0].abstract
+    assert "cross_encoder_score" in payload["candidates"][0]["ranking"]
+
+
 @pytest.mark.parametrize(("processing", "expected_peak"), [("serial", 1), ("concurrent", 2)])
 def test_paper_reports_use_selected_execution_mode_and_all_finish_before_synthesis(
     tmp_path, processing, expected_peak,
@@ -108,6 +141,31 @@ def test_one_source_failure_cannot_complete(tmp_path):
     assert result.metrics["source_success"] == {"arxiv": False, "openalex": True}
     assert result.metrics["processing_complete"] is True
     assert next(t for t in result.timings if t.stage == "search").error_count == 1
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_optional_crossref_preserves_core_results_and_audits_coverage(tmp_path, fails):
+    async def crossref(query, limit, *, settings=None, client=None):
+        if fails:
+            from paper_agent.sources.crossref_source import CrossrefSourceError
+            raise CrossrefSourceError("rate_limit", "Fixture Crossref rate limit", retryable=True)
+        papers = demo_papers("arxiv", 1)
+        papers[0].sources = ["crossref"]
+        papers[0].source_records = [{"source": "crossref", "id": "fixture"}]
+        return papers
+
+    result = asyncio.run(ResearchPipeline(settings_for(tmp_path), search_crossref_fn=crossref)
+                         .run_research_pipeline("agent memory", 3))
+    assert result.status == "demo_completed"
+    assert result.metrics["required_sources"] == ["arxiv", "openalex"]
+    assert result.metrics["optional_sources"] == ["crossref"]
+    assert result.metrics["source_success"]["crossref"] is not fails
+    assert result.source_counts["crossref"] == int(not fails)
+    assert result.metrics["source_coverage"]["crossref"]["merged_count"] == int(not fails)
+    if fails:
+        assert any(e.stage == "crossref_search" and e.code == "rate_limit" for e in result.errors)
+    assert result.metrics["processing_complete"] is True
+    assert next(t for t in result.timings if t.stage == "search").error_count == int(fails)
 
 
 def test_explicit_query_is_used_verbatim_without_planner(tmp_path):
@@ -222,7 +280,7 @@ def test_pdf_replacement_follows_rank_without_preferring_url_or_target(tmp_path)
     assert result.selected_papers[0].paper_id == "demo:001"
 
 
-def test_pdf_with_failed_markdown_conversion_keeps_its_slot(tmp_path):
+def test_failed_conversions_try_bounded_reserves_then_preserve_original_pdfs(tmp_path):
     async def failed_conversion(paper, *, settings):
         result = paper.model_copy(deep=True)
         result.status = "conversion_failed"
@@ -242,9 +300,127 @@ def test_pdf_with_failed_markdown_conversion_keeps_its_slot(tmp_path):
     assert result.metrics["pdf_acquired_count"] == 3
     assert result.metrics["fulltext_count"] == 0
     assert result.metrics["partial_fulltext_count"] == 0
-    assert result.metrics["replacement_attempts"] == []
+    assert len(result.metrics["replacement_attempts"]) == 6
+    assert result.metrics["readable_count"] == 0
+    assert result.metrics["downloaded_pdf_count"] == 9
+    assert result.metrics["fulltext_attempt_limit_reached"] is True
+    assert result.metrics["replacements"] == []
     assert result.metrics["analysis_paper_ids"] == ["demo:001", "demo:002", "demo:003"]
     assert all(paper.errors for paper in result.papers[:3])
+
+
+@pytest.mark.parametrize("processing", ["serial", "concurrent"])
+def test_unreadable_pdfs_are_replaced_in_rank_order_and_partial_bodies_are_kept(tmp_path, processing):
+    async def convert(paper, *, settings):
+        result = paper.model_copy(deep=True)
+        if paper.paper_id in {"demo:001", "demo:004"}:
+            result.status = "conversion_failed"
+            result.markdown_path = None
+            result.page_map = []
+            result.fulltext_quality = {"complete": False}
+            result.errors.append(ErrorInfo(code="conversion_failed", message="Fixture no body", stage="conversion"))
+        elif paper.paper_id == "demo:002":
+            result.status = "partial_fulltext"
+            result.fulltext_quality["complete"] = False
+        return result
+
+    async def scenario():
+        pipeline = ResearchPipeline(settings_for(tmp_path, processing=processing), convert_fn=convert)
+        result = await pipeline.run_research_pipeline("agent memory", 3)
+        persisted = pipeline.store.load(result.run_id)
+        assert persisted.metrics == result.metrics
+        # Completed stage remains idempotent across a fresh pipeline instance.
+        resumed = ResearchPipeline(pipeline.settings, convert_fn=convert)
+        assert (await resumed.prepare_fulltexts(result.run_id)).metrics == result.metrics
+        return result
+
+    result = asyncio.run(scenario())
+    assert [p.paper_id for p in result.selected_papers] == ["demo:001", "demo:002", "demo:003"]
+    assert result.metrics["attempted_paper_ids"] == [f"demo:{i:03d}" for i in range(1, 6)]
+    assert result.metrics["analysis_paper_ids"] == ["demo:002", "demo:003", "demo:005"]
+    assert result.metrics["replacements"] == [{"original_paper_id": "demo:001", "replacement_paper_id": "demo:005"}]
+    assert result.metrics["readable_count"] == 3
+    assert result.metrics["fulltext_count"] == 2
+    assert result.metrics["partial_fulltext_count"] == 1
+    assert result.metrics["downloaded_pdf_count"] == 5
+    assert result.metrics["pdf_acquired_count"] == 3
+    assert result.report and result.report.markdown
+    assert {r.paper_id for r in result.report.references} == set(result.metrics["analysis_paper_ids"])
+    assert any(p.paper_id == "demo:001" and Path(p.pdf_path).is_file() and p.errors for p in result.papers)
+
+
+@pytest.mark.parametrize("body", [b" \n\t", b"valid start" * 7000 + b"\xff"],
+                         ids=["whitespace", "invalid-utf8-tail"])
+def test_limited_recovery_does_not_reinsert_original_of_an_already_filled_slot(tmp_path, body):
+    async def convert(paper, *, settings):
+        if paper.paper_id not in {"demo:001", "demo:002"}:
+            return paper
+        result = paper.model_copy(deep=True)
+        # Empty text and invalid UTF-8 (even after a valid prefix) are unreadable.
+        Path(result.markdown_path).write_bytes(body)
+        result.status = "conversion_failed"
+        result.fulltext_quality["complete"] = False
+        return result
+
+    result = asyncio.run(ResearchPipeline(
+        settings_for(tmp_path, max_fulltext_attempts=1), convert_fn=convert,
+    ).run_research_pipeline("agent memory", 3))
+    assert result.metrics["readable_count"] == 2
+    assert result.metrics["analysis_paper_ids"] == ["demo:003", "demo:004", "demo:002"]
+    assert result.metrics["replacements"] == [{"original_paper_id": "demo:001", "replacement_paper_id": "demo:004"}]
+    assert result.metrics["fulltext_attempt_limit_reached"] is True
+    assert next(s for s in result.summaries if s.paper_id == "demo:002").summary_scope == "demo_fixture"
+    assert result.metrics["fulltext_count"] == 2
+
+
+@pytest.mark.parametrize("processing", ["serial", "concurrent"])
+def test_fulltext_stage_deadline_preserves_completed_work_and_stops_reserves(tmp_path, processing):
+    async def download(paper, *, settings):
+        if paper.paper_id == "demo:001":
+            return await prepare_demo_paper(paper, settings=settings)
+        await asyncio.Event().wait()
+
+    async def scenario():
+        pipeline = ResearchPipeline(settings_for(tmp_path, processing=processing, fulltext_timeout=.1),
+                                    download_fn=download)
+        result = await asyncio.wait_for(pipeline.run_research_pipeline("agent memory", 3), timeout=5)
+        assert pipeline.store.load(result.run_id).metrics == result.metrics
+        return result
+
+    result = asyncio.run(scenario())
+    assert result.metrics["fulltext_time_limit_reached"] is True
+    assert result.metrics["replacement_attempts"] == []
+    assert result.metrics["analysis_paper_ids"] == ["demo:001"]
+    assert result.metrics["readable_count"] == 1
+    assert result.metrics["fulltext_count"] == 1
+    assert {e.paper_id for e in result.errors if e.code == "fulltext_timeout"} == {"demo:002", "demo:003"}
+    assert result.status == "partial"
+
+
+def test_cancelling_fulltexts_keeps_completed_paper_checkpoint(tmp_path):
+    async def scenario():
+        entered = asyncio.Event()
+
+        async def download(paper, *, settings):
+            if paper.paper_id == "demo:001":
+                return await prepare_demo_paper(paper, settings=settings)
+            entered.set()
+            await asyncio.Event().wait()
+
+        pipeline = ResearchPipeline(settings_for(tmp_path), download_fn=download)
+        run = await pipeline.search_papers("agent memory", 3)
+        run = await pipeline.select_top_k_papers(run.run_id)
+        task = asyncio.create_task(pipeline.prepare_fulltexts(run.run_id))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        restored = pipeline.store.load(run.run_id)
+        assert "fulltexts" not in restored.metrics["completed_stages"]
+        assert Path(restored.papers[0].markdown_path).is_file()
+        assert restored.papers[0].metadata["fulltext_provenance"]["role"] == "original"
+        assert len(restored.selected_papers) == 3
+    asyncio.run(scenario())
 
 
 def test_concurrency_is_bounded_and_candidate_order_stable(tmp_path):

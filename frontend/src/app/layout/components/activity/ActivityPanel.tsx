@@ -23,6 +23,9 @@ export function ActivityPanel() {
     ? result.metrics.replacement_attempts
     : [];
   const selectedPapers = result?.selected_papers ?? [];
+  const sourceHealth = result?.metrics?.source_success as Record<string, boolean> | undefined;
+  const sourceCoverage = result?.metrics?.source_coverage as Record<string, { exclusive_count?: number }> | undefined;
+  const sourceNames: Record<string, string> = { arxiv: 'arXiv', openalex: 'OpenAlex', crossref: 'Crossref' };
   const empty = !job && !result;
   if (empty) return <div className="panel-empty"><span><Clock3 size={20}/></span><strong>还没有执行记录</strong><p>发起研究后，服务端记录的阶段、原始错误与工具调用会显示在这里。</p></div>;
   return <div className="activity-view">
@@ -31,6 +34,13 @@ export function ActivityPanel() {
     <details className="execution-log">
       <summary>展开执行记录 <span>{errorGroups.length} 类错误 · {events.length} 条事件 · {toolCalls.length} 次工具调用</span></summary>
       <div className="execution-log-body">
+        {result && Object.keys(result.source_counts ?? {}).length > 0 && <section className="event-section" aria-label="数据来源">
+          <h3>数据来源</h3>
+          <ul className="execution-paper-list">{Object.entries(result.source_counts ?? {}).map(([source, count]) => <li key={source}>
+            <span>{sourceNames[source] ?? source}{source === 'crossref' ? ' · 免费补充题录' : ''}</span>
+            <small>{sourceHealth?.[source] === true ? '检索完成' : sourceHealth?.[source] === false ? '来源未完成' : '历史记录未保存状态'} · 返回 {count} 条{typeof sourceCoverage?.[source]?.exclusive_count === 'number' ? ` · 独有候选 ${sourceCoverage[source].exclusive_count} 篇` : ''}</small>
+          </li>)}</ul>
+        </section>}
         {result && <section className="event-section execution-result-audit"><h3>结果范围与排序</h3><RankingSummary result={result}/><TargetCoverageSummary result={result}/><PartialResultSummary result={result}/></section>}
         {result && (selectedPapers.length > 0 || replacementAttempts.length > 0) && <section className="event-section">
           <h3>原始选择与全文替补</h3>

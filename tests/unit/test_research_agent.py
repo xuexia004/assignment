@@ -34,7 +34,8 @@ def run_async(function):
 
 
 def settings_at(tmp_path, **kwargs):
-    return Settings(data_dir=tmp_path / "data", **kwargs)
+    # These tests retain the original free-form report contract as a baseline.
+    return Settings(data_dir=tmp_path / "data", **{"report_strategy": "legacy", **kwargs})
 
 
 def content_for(request):
@@ -179,6 +180,7 @@ async def test_only_basic_report_shape_is_checked_without_extra_model_rounds(tmp
     assert summary.summary_scope == "failed"
     assert len(model.requests) == 1
     assert summary.errors[0].code == "invalid_model_output"
+    assert summary.errors[0].details["reason"] == ("empty_paper_report" if bad == "empty" else "schema_validation_failed")
 
 
 @run_async
@@ -244,6 +246,9 @@ async def test_synthesis_keeps_actual_paper_ids_without_quote_validation(tmp_pat
     report = await generate_report("memory", summaries, settings=settings_at(tmp_path), llm=model)
     assert len(model.requests) == 1
     assert any(error.code == "invalid_model_output" for error in report.errors)
+    failure = next(error for error in report.errors if error.code == "invalid_model_output")
+    assert failure.details["reason"] == "report_validation_failed"
+    assert any(issue["subreason"] == "references_mismatch" for issue in failure.details["issues"])
     assert [reference.paper_id for reference in report.references] == ["p0", "p1", "p2"]
 
 

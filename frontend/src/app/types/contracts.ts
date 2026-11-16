@@ -1,4 +1,5 @@
 export type {
+  ResearchProfile,
   Action,
   Artifact,
   ArtifactText,
@@ -35,6 +36,7 @@ export type {
   TargetCoverage,
   TargetCoverageEntry,
 } from '../../../../shared/contracts';
+export { RESEARCH_PROFILES, RESEARCH_PROFILE_LABELS } from '../../../../shared/contracts';
 
 import type { Conversation } from '../../../../shared/contracts';
 

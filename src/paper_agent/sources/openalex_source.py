@@ -255,6 +255,10 @@ def parse_work(work: dict[str, Any]) -> Paper:
     title = _text(work.get("title")) or _text(work.get("display_name"))
     primary = primary if isinstance(primary, dict) else {}
     paper_url = _web_url(primary.get("landing_page_url"))
+    percentile = work.get("citation_normalized_percentile")
+    percentile = percentile.get("value") if isinstance(percentile, dict) else None
+    if type(percentile) not in {int, float} or not 0 <= percentile <= 1:
+        percentile = None
     return Paper(
         paper_id=f"openalex:{short_id}",
         title=title or "[Untitled OpenAlex work]",
@@ -284,6 +288,12 @@ def parse_work(work: dict[str, Any]) -> Paper:
             "work_type": _text(work.get("type")),
             "title_missing": title is None,
             "pdf_urls_verified": False,
+            "citation_normalized_percentile": percentile,
+            "citation_metrics": {"openalex": {
+                "count": _integer(work.get("cited_by_count"), minimum=0),
+                "normalized_percentile": percentile,
+                "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            }},
         },
     )
 

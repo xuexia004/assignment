@@ -23,6 +23,7 @@ const stages: Record<string, string> = {
   main_agent_tool_call: 'Agent 工具调用',
   search_arxiv: 'arXiv 检索',
   search_openalex: 'OpenAlex 检索',
+  search_crossref: 'Crossref 检索',
   download: '全文下载',
   convert: 'PDF 正文提取',
   conversion: 'PDF 正文提取',
@@ -38,6 +39,7 @@ const stages: Record<string, string> = {
   total: '总计',
   arxiv_search: 'arXiv 检索',
   openalex_search: 'OpenAlex 检索',
+  crossref_search: 'Crossref 检索',
 };
 
 const tools: Record<string, string> = {
@@ -96,6 +98,8 @@ const paperStatuses: Record<string, string> = {
   no_open_access: '无开放全文',
   download_failed: '全文下载失败',
   conversion_failed: '全文提取失败',
+  fulltext_timeout: '全文处理超时',
+  fulltext_cancelled: '已补足篇数，停止替补',
   partial_fulltext: '部分全文',
   completed: '已处理',
   analyzed: '已分析',
@@ -106,6 +110,7 @@ const paperStatuses: Record<string, string> = {
 };
 
 const errors: Record<string, string> = {
+  fulltext_timeout: '全文处理阶段达到总时限，已保留取得的材料。',
   download_timeout: 'PDF 获取总时长超限，可稍后重试或调大下载预算。',
   candidate_timeout: '这个 PDF 候选超时，已尝试下一个候选。',
   no_open_access: '没有找到可公开获取的全文 PDF。',
@@ -220,6 +225,7 @@ export function rankingFallbackLabel(reason?: string | null): string {
 }
 
 const errorHints: Record<string, string> = {
+  fulltext_timeout: '已停止继续获取候补；已有正文仍可分析，未完成部分保留实际状态。',
   no_open_access: '可以核对论文是否有其他公开版本；当前论文会保留为未分析。',
   access_unavailable: '出版方未提供可下载的公开 PDF；可检查其他开放版本。',
   download_timeout: '下载预算已用尽；可稍后重试或查看候选地址。',

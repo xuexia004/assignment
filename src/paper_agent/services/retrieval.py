@@ -138,6 +138,11 @@ def _merge(group: list[Paper], reasons: list[str]) -> Paper:
     for paper in ordered:
         for name, value in paper.metadata.items():
             result.metadata.setdefault(name, value)
+    result.metadata["citation_metrics"] = {
+        source: values for paper in ordered
+        if isinstance(paper.metadata.get("citation_metrics", {}), dict)
+        for source, values in paper.metadata.get("citation_metrics", {}).items()
+    }
     originals: list[dict[str, Any]] = []
     for paper in ordered:
         existing = paper.metadata.get("retrieval_records")

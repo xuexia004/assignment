@@ -1,5 +1,5 @@
 import { Gauge } from 'lucide-react';
-import type { Paper } from '../../../types/contracts';
+import { RESEARCH_PROFILE_LABELS, type Paper, type ResearchProfile } from '../../../types/contracts';
 import { useWorkspaceState } from '../../../stores/workspaceStore';
 import { formatDuration } from '../../../utils/format';
 import { stageLabel } from '../../../utils/labels';
@@ -34,11 +34,14 @@ export function MetricsPanel() {
   const timings = (result.timings ?? []).filter(timing => timing.stage !== 'total');
   const ranking = result.metrics.ranking as { duration_seconds?: number; actual_ranker?: string } | undefined;
   const degraded = result.metrics.selector_degraded === true;
+  const experiment = result.metrics.experiment as { profile?: string; config_sha256?: string } | undefined;
 
   return <div className="metrics-view">
     <header className="panel-intro"><h2>性能数据</h2></header>
     <p className="task-metrics-question">{result.idea}</p>
     {result.mode === 'demo' && <p className="task-metrics-note">演示数据</p>}
+    {experiment?.profile && <p className="task-metrics-note" title={experiment.config_sha256}>对照配置：{RESEARCH_PROFILE_LABELS[experiment.profile as ResearchProfile] ?? experiment.profile}</p>}
+    {typeof result.metrics.analysis_strategy === 'string' && <p className="task-metrics-note">单篇分析：{result.metrics.analysis_strategy === 'section_map_reduce' ? '长文分段并发后综合' : result.metrics.analysis_strategy === 'evidence_context' ? '篇内证据检索与原文引用核对' : result.metrics.analysis_strategy === 'grounded_fulltext' ? '整篇证据定位与引用核对' : result.metrics.analysis_strategy === 'direct_paper_reports' ? '整篇直接分析' : '未识别的历史策略'}</p>}
     <section className="task-runtime" aria-label="运行时间">
       <div className="task-metrics-heading"><h3>运行时间</h3><strong>{formatDuration(taskTotalSeconds(result) ?? undefined)}</strong></div>
       <dl><div><dt>执行方式</dt><dd>{result.execution_mode === 'concurrent' ? '并行' : result.execution_mode === 'sequential' ? '顺序' : '未记录'}</dd></div>{timings.map((timing, index) => <div key={`${timing.stage}:${index}`}>

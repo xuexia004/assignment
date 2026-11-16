@@ -7,17 +7,38 @@ export type DeliveryStatus = 'result' | 'preliminary_notes' | 'no_result';
 export type ExecutionMode = 'auto' | 'parallel' | 'sequential';
 export type ResolvedExecutionMode = 'sequential' | 'concurrent';
 export type PreferredPaperCount = 3 | 5 | 8;
+export const RESEARCH_PROFILES = ['current', 'baseline', 'sources', 'ranking', 'layout', 'evidence', 'evidence_fast', 'grounded', 'enhanced', 'custom'] as const;
+export type ResearchProfile = typeof RESEARCH_PROFILES[number];
+export const RESEARCH_PROFILE_LABELS: Record<ResearchProfile, string> = {
+  current: '启动时配置', baseline: '基线', sources: '仅新增来源', ranking: '仅联合重排',
+  custom: '单项开关组合',
+  layout: '仅版面解析', evidence: '篇内证据检索', evidence_fast: '级联证据检索', grounded: '全文证据分析', enhanced: '综合增强',
+};
 export type PdfAcquisitionStatus = 'not_attempted' | 'downloaded' | 'unavailable' | 'failed';
 export type PdfConversionStatus = 'not_attempted' | 'converted' | 'partial' | 'failed';
 export type EvidenceLevel = 'metadata_only' | 'abstract_only' | 'partial_fulltext' | 'fulltext';
 export type Action = 'research' | 'chat';
 export interface PublicConfig {
+  download_candidate_timeout?: number; download_timeout?: number; fulltext_timeout?: number;
+  crossref_enabled?: boolean;
+  cross_encoder_enabled?: boolean;
+  pdf_parser?: 'legacy' | 'layout';
+  paper_analysis_strategy?: 'direct' | 'sections' | 'evidence' | 'evidence_fast' | 'grounded';
+  report_strategy?: 'legacy' | 'structured';
+  research_profile?: ResearchProfile;
   provider: string; base_url: string; model: string; api_key_configured: boolean;
   openalex_api_key_configured: boolean; thinking_enabled: boolean; http_proxy: string;
   default_top_k: number; default_execution_mode: ExecutionMode | 'concurrent';
   concurrency: number; llm_timeout: number; http_timeout: number;
 }
 export interface ConfigUpdate {
+  download_candidate_timeout?: number; download_timeout?: number; fulltext_timeout?: number;
+  crossref_enabled?: boolean;
+  cross_encoder_enabled?: boolean;
+  pdf_parser?: PublicConfig['pdf_parser'];
+  paper_analysis_strategy?: PublicConfig['paper_analysis_strategy'];
+  report_strategy?: PublicConfig['report_strategy'];
+  research_profile?: ResearchProfile;
   base_url?: string; model?: string; api_key?: string; clear_api_key?: boolean;
   openalex_api_key?: string; clear_openalex_api_key?: boolean; thinking_enabled?: boolean;
   http_proxy?: string; default_top_k?: number; concurrency?: number;

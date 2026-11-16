@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import unicodedata
 from pathlib import Path
 
 import pymupdf
 
+from paper_agent.config import Settings
 from paper_agent.models import Paper
+from paper_agent.services.downloader import _read_cache, pdf_cache_identity, pdf_cache_key
 from paper_agent.services.pdf_runtime import PDF_PARSE_LOCK
 
 _HEADING = re.compile(r"^\s*(?:key\s*words?|index\s*terms|关键词|关键字)\s*[:：—–-]\s*(.*)$", re.I)
@@ -64,10 +65,27 @@ def enrich_cached_author_keywords(papers: list[Paper], pdf_dir: Path) -> list[Pa
     for original in papers:
         paper = original.model_copy(deep=True)
         results.append(paper)
+        identity, ambiguous = pdf_cache_identity(paper)
+        provenance = paper.metadata.get("author_keywords_provenance")
+        if isinstance(provenance, dict) and provenance.get("source") == "pdf_keyword_section":
+            previous = provenance.get("cache_identity")
+            if (isinstance(previous, dict) and previous.get("arxiv_version")
+                    and identity.get("arxiv_version")
+                    and any(key in previous and previous[key] != value for key, value in identity.items())):
+                paper.metadata.pop("author_keywords", None)
+                paper.metadata.pop("author_keywords_provenance", None)
         if author_keywords(paper):
             continue
-        path = Path(pdf_dir) / (hashlib.sha256(paper.paper_id.encode("utf-8")).hexdigest() + ".pdf")
+        if ambiguous:
+            continue
+        path = Path(pdf_dir) / (pdf_cache_key(identity) + ".pdf")
         if not path.is_file():
+            continue
+        # Explicit revisions need the same identity/content check as Downloader;
+        # historical unversioned keyword PDFs retain their existing compatibility.
+        if identity.get("arxiv_version") and _read_cache(
+            path, path.with_suffix(".json"), identity, Settings.max_pdf_bytes,
+        ) is None:
             continue
         try:
             with PDF_PARSE_LOCK, pymupdf.open(path) as document:
@@ -86,6 +104,7 @@ def enrich_cached_author_keywords(papers: list[Paper], pdf_dir: Path) -> list[Pa
                             paper.metadata["author_keywords_provenance"] = {
                                 "source": "pdf_keyword_section", "page_number": page_index + 1,
                                 "quote": quote, "paper_id": paper.paper_id,
+                                "cache_identity": identity,
                             }
                             break
                     if author_keywords(paper):
